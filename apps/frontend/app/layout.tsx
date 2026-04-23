@@ -1,5 +1,5 @@
-import type { CSSProperties, ReactNode } from 'react';
 import type { Metadata, Viewport } from 'next';
+import type { CSSProperties, ReactNode } from 'react';
 
 import { Providers } from './providers';
 
