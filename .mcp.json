@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json.schemastore.org/mcp.json",
+
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"],
+      "description": "라이브러리 최신 문서 조회 (NestJS, Prisma, Next.js, rrule.js 등)"
+    },
+
+    "postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://meetingroom:meetingroom_dev_pw@localhost:5432/meetingroom_dev"
+      ],
+      "description": "로컬 PostgreSQL 스키마 조회 및 읽기 전용 쿼리"
+    },
+
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ],
+      "description": "프로젝트 파일 시스템 (현재 디렉토리)"
+    }
+  }
+}

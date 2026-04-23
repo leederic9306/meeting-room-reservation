@@ -1,0 +1,102 @@
+# =============================================================================
+# 사내 회의실 예약 시스템 - 로컬 개발 환경
+# =============================================================================
+# 사용법:
+#   docker compose up -d        # 모든 서비스 백그라운드 기동
+#   docker compose logs -f      # 로그 확인
+#   docker compose down         # 중지
+#   docker compose down -v      # 중지 + 볼륨 삭제 (DB 초기화)
+#
+# 서비스:
+#   - postgres : PostgreSQL 16 (포트 5432)
+#   - mailhog  : 가짜 SMTP 서버 + 웹 UI (SMTP 1025, UI 8025)
+#   - adminer  : DB GUI (포트 8081, 선택)
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: meeting-room-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-meetingroom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meetingroom_dev_pw}
+      POSTGRES_DB: ${POSTGRES_DB:-meetingroom_dev}
+      # 한국어 정렬 및 시간대 기본값
+      LANG: ko_KR.utf8
+      TZ: Asia/Seoul
+      PGTZ: Asia/Seoul
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # 초기화 스크립트 (btree_gist 확장 활성화 등)
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meetingroom} -d ${POSTGRES_DB:-meetingroom_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - meeting-room-net
+
+  # ---------------------------------------------------------------------------
+  # MailHog - 로컬 SMTP 서버 (이메일 인증 코드 발송 테스트용)
+  # ---------------------------------------------------------------------------
+  # SMTP: localhost:1025 (애플리케이션이 발송)
+  # Web UI: http://localhost:8025 (받은 이메일 확인)
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: meeting-room-mailhog
+    restart: unless-stopped
+    ports:
+      - "${MAILHOG_SMTP_PORT:-1025}:1025"
+      - "${MAILHOG_UI_PORT:-8025}:8025"
+    networks:
+      - meeting-room-net
+
+  # ---------------------------------------------------------------------------
+  # Adminer - 가벼운 DB GUI (선택, profile로 분리)
+  # ---------------------------------------------------------------------------
+  # 사용 시: docker compose --profile tools up -d
+  # 접속: http://localhost:8081
+  #   System: PostgreSQL
+  #   Server: postgres
+  #   Username: meetingroom
+  #   Password: meetingroom_dev_pw
+  #   Database: meetingroom_dev
+  adminer:
+    image: adminer:4.8.1
+    container_name: meeting-room-adminer
+    restart: unless-stopped
+    profiles:
+      - tools
+    ports:
+      - "${ADMINER_PORT:-8081}:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DESIGN: dracula
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - meeting-room-net
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    name: meeting-room-postgres-data
+
+# =============================================================================
+# Network
+# =============================================================================
+networks:
+  meeting-room-net:
+    name: meeting-room-net
+    driver: bridge

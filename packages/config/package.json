@@ -1,0 +1,26 @@
+{
+  "name": "@meeting-room/config",
+  "version": "0.1.0",
+  "private": true,
+  "description": "모노레포 공용 ESLint / TypeScript 베이스 설정",
+  "exports": {
+    "./eslint-config-base": "./eslint-config-base.cjs",
+    "./eslint-config-nest": "./eslint-config-nest.cjs",
+    "./eslint-config-next": "./eslint-config-next.cjs",
+    "./tsconfig-base.json": "./tsconfig-base.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "eslint-config-base.cjs",
+    "eslint-config-nest.cjs",
+    "eslint-config-next.cjs",
+    "tsconfig-base.json"
+  ],
+  "scripts": {
+    "lint": "echo \"[config] 정적 설정 패키지 - lint 대상 없음\"",
+    "typecheck": "echo \"[config] 정적 설정 패키지 - typecheck 대상 없음\"",
+    "test": "echo \"[config] 정적 설정 패키지 - test 대상 없음\"",
+    "build": "echo \"[config] 정적 설정 패키지 - build 대상 없음\"",
+    "clean": "rimraf .turbo"
+  }
+}
