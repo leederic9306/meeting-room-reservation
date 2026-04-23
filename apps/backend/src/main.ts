@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 
 import { AppModule } from './app.module';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { EnvelopeInterceptor } from './common/interceptors/envelope.interceptor';
 import type { Env } from './config/env.validation';
 
 async function bootstrap(): Promise<void> {
@@ -18,6 +20,8 @@ async function bootstrap(): Promise<void> {
       transformOptions: { enableImplicitConversion: true },
     }),
   );
+  app.useGlobalInterceptors(new EnvelopeInterceptor());
+  app.useGlobalFilters(new AllExceptionsFilter());
 
   // /health는 프리픽스 제외 (PRD/roadmap의 GET /health 규약)
   app.setGlobalPrefix('api/v1', { exclude: ['health'] });

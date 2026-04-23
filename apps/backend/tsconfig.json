@@ -7,7 +7,6 @@
     "emitDecoratorMetadata": true,
     "outDir": "./dist",
     "baseUrl": "./",
-    "rootDir": "./src",
     "types": ["node", "jest"]
   },
   "include": ["src/**/*.ts", "test/**/*.ts"],
