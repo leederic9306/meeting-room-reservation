@@ -62,6 +62,9 @@ importers:
       class-validator:
         specifier: ^0.14.1
         version: 0.14.4
+      handlebars:
+        specifier: ^4.7.9
+        version: 4.7.9
       nodemailer:
         specifier: ^8.0.5
         version: 8.0.5

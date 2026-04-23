@@ -7,6 +7,10 @@ import type { Env } from '../../config/env.validation';
 
 import { MailService, type SendMailOptions } from './mail.service';
 
+/**
+ * nodemailer 기반 SMTP 구현. 로컬은 MailHog(localhost:1025), 운영은 SES/SMTP로 교체.
+ * 환경변수: MAIL_HOST / MAIL_PORT / MAIL_USER / MAIL_PASSWORD / MAIL_FROM / MAIL_FROM_NAME
+ */
 @Injectable()
 export class SmtpMailService extends MailService implements OnModuleDestroy {
   private readonly logger = new Logger(SmtpMailService.name);
@@ -31,7 +35,7 @@ export class SmtpMailService extends MailService implements OnModuleDestroy {
     this.from = `"${fromName}" <${fromEmail}>`;
   }
 
-  async sendMail(options: SendMailOptions): Promise<void> {
+  async send(options: SendMailOptions): Promise<void> {
     await this.transporter.sendMail({
       from: this.from,
       to: options.to,

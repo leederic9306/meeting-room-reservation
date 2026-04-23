@@ -170,7 +170,7 @@ class InMemoryPrisma {
 
 class CapturingMail extends MailService {
   sent: SendMailOptions[] = [];
-  async sendMail(options: SendMailOptions): Promise<void> {
+  async send(options: SendMailOptions): Promise<void> {
     this.sent.push(options);
   }
   reset(): void {

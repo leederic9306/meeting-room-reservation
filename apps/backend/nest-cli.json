@@ -4,6 +4,8 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "deleteOutDir": true,
-    "tsConfigPath": "tsconfig.build.json"
+    "tsConfigPath": "tsconfig.build.json",
+    "assets": [{ "include": "infra/mail/templates/**/*.hbs", "watchAssets": true }],
+    "watchAssets": true
   }
 }

@@ -10,5 +10,5 @@ export interface SendMailOptions {
  * 본 추상 클래스에만 의존한다. 테스트에서는 jest.fn() 기반 mock provider로 교체한다.
  */
 export abstract class MailService {
-  abstract sendMail(options: SendMailOptions): Promise<void>;
+  abstract send(options: SendMailOptions): Promise<void>;
 }

@@ -18,6 +18,7 @@ import * as argon2 from 'argon2';
 
 import type { AuthUser } from '../../common/types/auth-user.type';
 import type { Env } from '../../config/env.validation';
+import { MailTemplateRenderer } from '../../infra/mail/mail-template.renderer';
 import { MailService } from '../../infra/mail/mail.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 
@@ -63,6 +64,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly config: ConfigService<Env, true>,
     private readonly mailService: MailService,
+    private readonly mailTemplates: MailTemplateRenderer,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -135,7 +137,7 @@ export class AuthService {
     });
 
     // 외부 호출(메일)은 트랜잭션 외부. 실패하면 로그만 남기고 resend로 복구.
-    await this.sendVerificationMail(verification.user.email, plainCode);
+    await this.sendVerificationMail(verification.user.email, plainCode, dto.name);
 
     return {
       userId: verification.userId,
@@ -240,7 +242,7 @@ export class AuthService {
   async resendCode(dto: ResendCodeDto): Promise<ResendCodeResult> {
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },
-      select: { id: true, email: true, status: true },
+      select: { id: true, email: true, name: true, status: true },
     });
     if (!user) {
       throw new NotFoundException({
@@ -292,7 +294,7 @@ export class AuthService {
       });
     });
 
-    await this.sendVerificationMail(user.email, plainCode);
+    await this.sendVerificationMail(user.email, plainCode, user.name);
 
     const nextResendAvailableAt = new Date(created.sentAt.getTime() + cooldownSec * 1000);
     return {
@@ -393,13 +395,14 @@ export class AuthService {
     return new Date(now.getTime() + ttlMin * 60_000);
   }
 
-  private async sendVerificationMail(email: string, code: string): Promise<void> {
-    const ttlMin = this.config.get('EMAIL_CODE_TTL_MINUTES', { infer: true });
-    const subject = '[회의실 예약] 이메일 인증 코드';
+  private async sendVerificationMail(email: string, code: string, name?: string): Promise<void> {
+    const ttlMinutes = this.config.get('EMAIL_CODE_TTL_MINUTES', { infer: true });
+    const appName = this.config.get('MAIL_FROM_NAME', { infer: true });
+    const subject = `[${appName}] 이메일 인증 코드`;
     const text = [
-      '안녕하세요,',
+      `안녕하세요${name ? ` ${name}님` : ''},`,
       '',
-      `회원가입을 완료하려면 아래 인증 코드를 ${ttlMin}분 이내에 입력해주세요.`,
+      `회원가입을 완료하려면 아래 인증 코드를 ${ttlMinutes}분 이내에 입력해주세요.`,
       '',
       `인증 코드: ${code}`,
       '',
@@ -407,7 +410,13 @@ export class AuthService {
     ].join('\n');
 
     try {
-      await this.mailService.sendMail({ to: email, subject, text });
+      const html = await this.mailTemplates.render('verification-code', {
+        appName,
+        name,
+        code,
+        ttlMinutes,
+      });
+      await this.mailService.send({ to: email, subject, text, html });
     } catch (error) {
       // 메일 실패는 요청을 막지 않는다 — 사용자는 resend로 재시도 가능.
       this.logger.error(

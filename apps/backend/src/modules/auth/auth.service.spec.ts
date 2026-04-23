@@ -11,6 +11,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { UserRole, UserStatus } from '@prisma/client';
 
+import { MailTemplateRenderer } from '../../infra/mail/mail-template.renderer';
 import { MailService } from '../../infra/mail/mail.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 
@@ -48,7 +49,8 @@ describe('AuthService', () => {
     };
     $transaction: jest.Mock;
   };
-  let mail: { sendMail: jest.Mock };
+  let mail: { send: jest.Mock };
+  let mailTemplates: { render: jest.Mock };
   let jwtSignAsync: jest.Mock;
 
   const envValues: Record<string, unknown> = {
@@ -60,6 +62,7 @@ describe('AuthService', () => {
     EMAIL_CODE_MAX_ATTEMPTS: 5,
     EMAIL_CODE_RESEND_COOLDOWN_SECONDS: 60,
     EMAIL_CODE_HASH_ENABLED: false,
+    MAIL_FROM_NAME: '회의실 예약',
   };
   const configGet = jest.fn((key: string) => envValues[key]);
 
@@ -91,7 +94,8 @@ describe('AuthService', () => {
         return Promise.all(arg);
       }),
     };
-    mail = { sendMail: jest.fn().mockResolvedValue(undefined) };
+    mail = { send: jest.fn().mockResolvedValue(undefined) };
+    mailTemplates = { render: jest.fn().mockResolvedValue('<html>rendered</html>') };
     jwtSignAsync = jest.fn().mockResolvedValue('signed.jwt.token');
 
     const module: TestingModule = await Test.createTestingModule({
@@ -101,6 +105,7 @@ describe('AuthService', () => {
         { provide: JwtService, useValue: { signAsync: jwtSignAsync } },
         { provide: ConfigService, useValue: { get: configGet } },
         { provide: MailService, useValue: mail },
+        { provide: MailTemplateRenderer, useValue: mailTemplates },
       ],
     }).compile();
 
@@ -142,10 +147,22 @@ describe('AuthService', () => {
       expect(evArg.data.code).toMatch(/^\d{6}$/); // 평문 저장 (EMAIL_CODE_HASH_ENABLED=false)
       expect(evArg.data.expiresAt.getTime()).toBeGreaterThan(Date.now());
 
-      expect(mail.sendMail).toHaveBeenCalledTimes(1);
-      const mailArg = mail.sendMail.mock.calls[0]?.[0] as { to: string; text: string };
+      expect(mailTemplates.render).toHaveBeenCalledWith('verification-code', {
+        appName: expect.any(String),
+        name: dto.name,
+        code: evArg.data.code,
+        ttlMinutes: 10,
+      });
+      expect(mail.send).toHaveBeenCalledTimes(1);
+      const mailArg = mail.send.mock.calls[0]?.[0] as {
+        to: string;
+        subject: string;
+        text: string;
+        html: string;
+      };
       expect(mailArg.to).toBe(dto.email);
       expect(mailArg.text).toContain(evArg.data.code);
+      expect(mailArg.html).toBe('<html>rendered</html>');
 
       expect(result).toEqual({
         userId: 'user-1',
@@ -180,7 +197,7 @@ describe('AuthService', () => {
 
       await expect(service.signup(dto)).rejects.toBeInstanceOf(ConflictException);
       expect(prisma.user.create).not.toHaveBeenCalled();
-      expect(mail.sendMail).not.toHaveBeenCalled();
+      expect(mail.send).not.toHaveBeenCalled();
     });
   });
 
@@ -364,7 +381,7 @@ describe('AuthService', () => {
         where: { userId: 'user-1', verifiedAt: null },
       });
       expect(prisma.emailVerification.create).toHaveBeenCalledTimes(1);
-      expect(mail.sendMail).toHaveBeenCalledTimes(1);
+      expect(mail.send).toHaveBeenCalledTimes(1);
       expect(result.codeSentAt).toBe(sentAt.toISOString());
       expect(new Date(result.nextResendAvailableAt).getTime()).toBe(sentAt.getTime() + 60_000);
     });
@@ -387,7 +404,7 @@ describe('AuthService', () => {
       expect(body.details.retryAfterSeconds).toBeGreaterThan(0);
       expect(body.details.retryAfterSeconds).toBeLessThanOrEqual(60);
       expect(prisma.emailVerification.create).not.toHaveBeenCalled();
-      expect(mail.sendMail).not.toHaveBeenCalled();
+      expect(mail.send).not.toHaveBeenCalled();
     });
 
     it('존재하지 않는 이메일이면 USER_NOT_FOUND', async () => {
