@@ -1,4 +1,4 @@
-import { createHash, randomInt } from 'node:crypto';
+import { createHash, randomBytes, randomInt } from 'node:crypto';
 
 import {
   BadRequestException,
@@ -13,10 +13,11 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { type User, UserRole, UserStatus } from '@prisma/client';
+import { Prisma, type User, UserRole, UserStatus } from '@prisma/client';
 import * as argon2 from 'argon2';
 
 import type { AuthUser } from '../../common/types/auth-user.type';
+import { parseDurationToMs } from '../../common/utils/duration';
 import type { Env } from '../../config/env.validation';
 import { MailTemplateRenderer } from '../../infra/mail/mail-template.renderer';
 import { MailService } from '../../infra/mail/mail.service';
@@ -50,8 +51,15 @@ export interface ResendCodeResult {
   nextResendAvailableAt: string;
 }
 
+export interface LoginContext {
+  ipAddress?: string;
+  userAgent?: string;
+}
+
 export interface LoginResult {
   accessToken: string;
+  /** 서비스 레이어 전용 — 컨트롤러에서 쿠키로 내보내고 응답 바디에는 포함하지 않는다. */
+  refreshToken: string;
   user: AuthUser & { name: string };
 }
 
@@ -305,14 +313,22 @@ export class AuthService {
 
   // ---------------------------------------------------------------------------
   // 로그인 — docs/03-api-spec.md §2.4
-  // Phase 1 후반에 Refresh Token 발급/저장, LoginAttempt 기록, ACCOUNT_LOCKED를 추가한다.
   // ---------------------------------------------------------------------------
 
-  async login(dto: LoginDto): Promise<LoginResult> {
+  async login(dto: LoginDto, ctx: LoginContext = {}): Promise<LoginResult> {
     const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    const now = new Date();
 
-    // 계정 열거 방지: 존재 여부와 무관하게 동일 에러.
-    if (!user || !(await this.verifyPassword(user.passwordHash, dto.password))) {
+    // 이미 잠금 구간이면 비밀번호 검증 전에 차단 — 공격 비용 상승 + lockedUntil을 기준으로 응답.
+    if (user?.lockedUntil && user.lockedUntil.getTime() > now.getTime()) {
+      await this.recordLoginAttempt(dto.email, false, ctx.ipAddress);
+      throw this.accountLockedException(user.lockedUntil);
+    }
+
+    const passwordValid = user ? await this.verifyPassword(user.passwordHash, dto.password) : false;
+
+    if (!user || !passwordValid) {
+      await this.handleFailedLogin(dto.email, user, ctx);
       throw new UnauthorizedException({
         code: 'INVALID_CREDENTIALS',
         message: '이메일 또는 비밀번호가 올바르지 않습니다.',
@@ -320,12 +336,15 @@ export class AuthService {
     }
 
     if (user.status === UserStatus.PENDING) {
+      await this.recordLoginAttempt(dto.email, false, ctx.ipAddress);
       throw new ForbiddenException({
         code: 'EMAIL_NOT_VERIFIED',
         message: '이메일 인증이 필요합니다.',
       });
     }
     if (user.status !== UserStatus.ACTIVE) {
+      // LOCKED/DELETED 상태는 계정 열거 방지 차원에서 자격 불일치와 동일 응답.
+      await this.recordLoginAttempt(dto.email, false, ctx.ipAddress);
       throw new UnauthorizedException({
         code: 'INVALID_CREDENTIALS',
         message: '이메일 또는 비밀번호가 올바르지 않습니다.',
@@ -334,14 +353,114 @@ export class AuthService {
 
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { lastLoginAt: new Date() },
+      // 성공 시 lockedUntil을 초기화 — 이후 실패 카운팅은 이 성공 시점 뒤부터 다시 시작.
+      data: { lastLoginAt: now, lockedUntil: null },
+    });
+    await this.recordLoginAttempt(dto.email, true, ctx.ipAddress);
+    await this.writeAuditLog({
+      actorId: user.id,
+      action: 'LOGIN_SUCCESS',
+      targetType: 'USER',
+      targetId: user.id,
+      ipAddress: ctx.ipAddress,
+    });
+
+    const accessToken = await this.issueAccessToken(user);
+    const refreshToken = await this.issueRefreshToken(user.id, ctx);
+    return {
+      accessToken,
+      refreshToken,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role },
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Refresh Token 회전 — docs/03-api-spec.md §2.5
+  // ---------------------------------------------------------------------------
+
+  async rotateRefreshToken(
+    refreshTokenPlain: string | undefined,
+    ctx: LoginContext = {},
+  ): Promise<LoginResult> {
+    if (!refreshTokenPlain) {
+      throw this.invalidRefreshTokenException();
+    }
+    const tokenHash = this.hashToken(refreshTokenPlain);
+    const existing = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash },
+      include: { user: true },
+    });
+    if (!existing || existing.revokedAt) {
+      throw this.invalidRefreshTokenException();
+    }
+    if (existing.expiresAt.getTime() <= Date.now()) {
+      throw new UnauthorizedException({
+        code: 'REFRESH_TOKEN_EXPIRED',
+        message: '리프레시 토큰이 만료되었습니다. 다시 로그인해주세요.',
+      });
+    }
+
+    const { user } = existing;
+    if (user.status !== UserStatus.ACTIVE) {
+      throw this.invalidRefreshTokenException();
+    }
+    if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
+      throw this.accountLockedException(user.lockedUntil);
+    }
+
+    const newTokenPlain = this.generateRefreshTokenValue();
+    const newTokenHash = this.hashToken(newTokenPlain);
+    const newExpiresAt = new Date(Date.now() + this.getRefreshTokenTtlMs());
+
+    // 단일 트랜잭션으로 이전 토큰 revoke + 신규 토큰 발급을 원자화.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.refreshToken.update({
+        where: { id: existing.id },
+        data: { revokedAt: new Date() },
+      });
+      await tx.refreshToken.create({
+        data: {
+          userId: user.id,
+          tokenHash: newTokenHash,
+          userAgent: ctx.userAgent?.slice(0, 500),
+          ipAddress: ctx.ipAddress,
+          expiresAt: newExpiresAt,
+        },
+      });
     });
 
     const accessToken = await this.issueAccessToken(user);
     return {
       accessToken,
+      refreshToken: newTokenPlain,
       user: { id: user.id, email: user.email, name: user.name, role: user.role },
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // 로그아웃 — docs/03-api-spec.md §2.6
+  // ---------------------------------------------------------------------------
+
+  async logout(
+    userId: string,
+    refreshTokenPlain: string | undefined,
+    ipAddress?: string,
+  ): Promise<void> {
+    if (refreshTokenPlain) {
+      const tokenHash = this.hashToken(refreshTokenPlain);
+      // 본인 소유 + 살아있는 토큰만 폐기 — 타 계정 토큰을 임의로 무효화하지 못하도록 userId 조건.
+      await this.prisma.refreshToken.updateMany({
+        where: { tokenHash, userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+    }
+    await this.writeAuditLog({
+      actorId: userId,
+      action: 'LOGOUT',
+      targetType: 'USER',
+      targetId: userId,
+      ipAddress,
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -351,12 +470,157 @@ export class AuthService {
   async validateJwtUser(userId: string): Promise<AuthUser | null> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, role: true, status: true },
+      select: { id: true, email: true, role: true, status: true, lockedUntil: true },
     });
     if (!user || user.status !== UserStatus.ACTIVE) {
       return null;
     }
+    // 발급된 access token이라도 잠금 구간이면 즉시 거절 — 재로그인을 강제.
+    if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
+      return null;
+    }
     return { id: user.id, email: user.email, role: user.role };
+  }
+
+  /** Controller가 쿠키 maxAge/Expires를 계산할 때 공유하는 단일 진실. */
+  getRefreshTokenTtlMs(): number {
+    const expr = this.config.get('JWT_REFRESH_EXPIRES_IN', { infer: true });
+    return parseDurationToMs(expr);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 로그인 실패 처리 — 실패 집계 후 임계값 도달 시 lockedUntil 설정.
+  // ---------------------------------------------------------------------------
+
+  private async handleFailedLogin(
+    email: string,
+    user: User | null,
+    ctx: LoginContext,
+  ): Promise<void> {
+    await this.recordLoginAttempt(email, false, ctx.ipAddress);
+    if (!user) {
+      // 계정이 없으면 잠글 대상 없음 — LoginAttempt 기록만 남긴다.
+      return;
+    }
+
+    // "연속" 실패는 "마지막 성공 이후" 실패로 정의 — 성공 시 카운터 리셋과 일관.
+    const lastSuccess = await this.prisma.loginAttempt.findFirst({
+      where: { email, success: true },
+      orderBy: { attemptedAt: 'desc' },
+      select: { attemptedAt: true },
+    });
+    const failedCount = await this.prisma.loginAttempt.count({
+      where: {
+        email,
+        success: false,
+        ...(lastSuccess ? { attemptedAt: { gt: lastSuccess.attemptedAt } } : {}),
+      },
+    });
+    const maxAttempts = this.config.get('LOGIN_MAX_ATTEMPTS', { infer: true });
+
+    if (failedCount >= maxAttempts) {
+      const lockMinutes = this.config.get('LOGIN_LOCK_MINUTES', { infer: true });
+      const lockedUntil = new Date(Date.now() + lockMinutes * 60_000);
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { lockedUntil },
+      });
+      await this.writeAuditLog({
+        actorId: null,
+        action: 'ACCOUNT_LOCKED',
+        targetType: 'USER',
+        targetId: user.id,
+        ipAddress: ctx.ipAddress,
+        payload: {
+          lockedUntil: lockedUntil.toISOString(),
+          reason: 'LOGIN_MAX_ATTEMPTS_EXCEEDED',
+          failedCount,
+        },
+      });
+    } else {
+      await this.writeAuditLog({
+        actorId: user.id,
+        action: 'LOGIN_FAILED',
+        targetType: 'USER',
+        targetId: user.id,
+        ipAddress: ctx.ipAddress,
+        payload: { failedCount },
+      });
+    }
+  }
+
+  private async recordLoginAttempt(
+    email: string,
+    success: boolean,
+    ipAddress: string | undefined,
+  ): Promise<void> {
+    await this.prisma.loginAttempt.create({
+      data: { email, success, ipAddress },
+    });
+  }
+
+  private async writeAuditLog(params: {
+    actorId: string | null;
+    action: string;
+    targetType: string;
+    targetId: string | null;
+    ipAddress?: string;
+    payload?: Prisma.InputJsonValue;
+  }): Promise<void> {
+    await this.prisma.auditLog.create({
+      data: {
+        actorId: params.actorId ?? undefined,
+        action: params.action,
+        targetType: params.targetType,
+        targetId: params.targetId ?? undefined,
+        ipAddress: params.ipAddress,
+        payload: params.payload,
+      },
+    });
+  }
+
+  private accountLockedException(lockedUntil: Date): HttpException {
+    // 423 Locked — NestJS HttpStatus 열거에 상수가 없어 숫자 리터럴 사용.
+    return new HttpException(
+      {
+        code: 'ACCOUNT_LOCKED',
+        message: '로그인 실패 횟수 초과로 계정이 일시 잠금되었습니다.',
+        details: { lockedUntil: lockedUntil.toISOString() },
+      },
+      423,
+    );
+  }
+
+  private invalidRefreshTokenException(): UnauthorizedException {
+    return new UnauthorizedException({
+      code: 'INVALID_REFRESH_TOKEN',
+      message: '유효하지 않은 리프레시 토큰입니다.',
+    });
+  }
+
+  private async issueRefreshToken(userId: string, ctx: LoginContext): Promise<string> {
+    const token = this.generateRefreshTokenValue();
+    const tokenHash = this.hashToken(token);
+    const expiresAt = new Date(Date.now() + this.getRefreshTokenTtlMs());
+    await this.prisma.refreshToken.create({
+      data: {
+        userId,
+        tokenHash,
+        userAgent: ctx.userAgent?.slice(0, 500),
+        ipAddress: ctx.ipAddress,
+        expiresAt,
+      },
+    });
+    return token;
+  }
+
+  private generateRefreshTokenValue(): string {
+    // 48 bytes = 384 bits. SHA-256 해시 저장 — 충돌/역산 위험 무시 수준.
+    return randomBytes(48).toString('hex');
+  }
+
+  private hashToken(plain: string): string {
+    return createHash('sha256').update(plain).digest('hex');
   }
 
   // ---------------------------------------------------------------------------

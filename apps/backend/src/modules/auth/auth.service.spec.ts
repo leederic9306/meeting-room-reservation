@@ -31,6 +31,10 @@ type TxClient = {
     update: jest.Mock;
     deleteMany: jest.Mock;
   };
+  refreshToken: {
+    create: jest.Mock;
+    update: jest.Mock;
+  };
 };
 
 describe('AuthService', () => {
@@ -46,6 +50,20 @@ describe('AuthService', () => {
       create: jest.Mock;
       update: jest.Mock;
       deleteMany: jest.Mock;
+    };
+    refreshToken: {
+      create: jest.Mock;
+      findUnique: jest.Mock;
+      update: jest.Mock;
+      updateMany: jest.Mock;
+    };
+    loginAttempt: {
+      create: jest.Mock;
+      findFirst: jest.Mock;
+      count: jest.Mock;
+    };
+    auditLog: {
+      create: jest.Mock;
     };
     $transaction: jest.Mock;
   };
@@ -63,6 +81,9 @@ describe('AuthService', () => {
     EMAIL_CODE_RESEND_COOLDOWN_SECONDS: 60,
     EMAIL_CODE_HASH_ENABLED: false,
     MAIL_FROM_NAME: '회의실 예약',
+    LOGIN_MAX_ATTEMPTS: 5,
+    LOGIN_LOCK_MINUTES: 30,
+    JWT_REFRESH_EXPIRES_IN: '14d',
   };
   const configGet = jest.fn((key: string) => envValues[key]);
 
@@ -71,13 +92,27 @@ describe('AuthService', () => {
       user: {
         findUnique: jest.fn(),
         create: jest.fn(),
-        update: jest.fn(),
+        update: jest.fn().mockResolvedValue(undefined),
       },
       emailVerification: {
         findFirst: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
         deleteMany: jest.fn(),
+      },
+      refreshToken: {
+        create: jest.fn().mockResolvedValue({ id: 'rt-new' }),
+        findUnique: jest.fn(),
+        update: jest.fn().mockResolvedValue(undefined),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      loginAttempt: {
+        create: jest.fn().mockResolvedValue(undefined),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(0),
+      },
+      auditLog: {
+        create: jest.fn().mockResolvedValue(undefined),
       },
       $transaction: jest.fn(async (arg: ((tx: TxClient) => Promise<unknown>) | unknown[]) => {
         if (typeof arg === 'function') {
@@ -87,6 +122,10 @@ describe('AuthService', () => {
               create: prisma.emailVerification.create,
               update: prisma.emailVerification.update,
               deleteMany: prisma.emailVerification.deleteMany,
+            },
+            refreshToken: {
+              create: prisma.refreshToken.create,
+              update: prisma.refreshToken.update,
             },
           };
           return arg(tx);
@@ -434,7 +473,9 @@ describe('AuthService', () => {
   describe('login', () => {
     const dto: LoginDto = { email: 'alice@example.com', password: 'Password1!' };
 
-    async function withHashedUser(overrides: Partial<{ status: UserStatus }> = {}) {
+    async function withHashedUser(
+      overrides: Partial<{ status: UserStatus; lockedUntil: Date | null }> = {},
+    ) {
       const passwordHash = await service.hashPassword(dto.password);
       return {
         id: 'uuid-1',
@@ -443,40 +484,67 @@ describe('AuthService', () => {
         name: '앨리스',
         role: UserRole.USER,
         status: UserStatus.ACTIVE,
+        lockedUntil: null as Date | null,
         ...overrides,
       };
     }
 
-    it('비밀번호 불일치면 INVALID_CREDENTIALS로 UnauthorizedException', async () => {
+    function findAuditCall(action: string) {
+      return prisma.auditLog.create.mock.calls.find(
+        (c) => (c[0] as { data: { action: string } }).data.action === action,
+      );
+    }
+
+    it('비밀번호 불일치면 INVALID_CREDENTIALS + LoginAttempt(success=false) + LOGIN_FAILED 감사', async () => {
       const user = await withHashedUser();
       prisma.user.findUnique.mockResolvedValue(user);
 
       await expect(
-        service.login({ email: dto.email, password: 'WrongPass1!' }),
+        service.login(
+          { email: dto.email, password: 'WrongPass1!' },
+          { ipAddress: '127.0.0.1', userAgent: 'jest' },
+        ),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(prisma.loginAttempt.create).toHaveBeenCalledWith({
+        data: { email: dto.email, success: false, ipAddress: '127.0.0.1' },
+      });
+      expect(findAuditCall('LOGIN_FAILED')).toBeDefined();
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
     });
 
-    it('존재하지 않는 이메일도 INVALID_CREDENTIALS (계정 열거 방지)', async () => {
+    it('존재하지 않는 이메일도 INVALID_CREDENTIALS (계정 열거 방지), 잠금 갱신 없음', async () => {
       prisma.user.findUnique.mockResolvedValue(null);
 
       await expect(service.login(dto)).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(prisma.loginAttempt.create).toHaveBeenCalledWith({
+        data: { email: dto.email, success: false, ipAddress: undefined },
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
-    it('PENDING 상태면 EMAIL_NOT_VERIFIED로 ForbiddenException', async () => {
+    it('PENDING 상태면 EMAIL_NOT_VERIFIED로 ForbiddenException + 실패 기록', async () => {
       const user = await withHashedUser({ status: UserStatus.PENDING });
       prisma.user.findUnique.mockResolvedValue(user);
 
       await expect(service.login(dto)).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.loginAttempt.create).toHaveBeenCalledWith({
+        data: { email: dto.email, success: false, ipAddress: undefined },
+      });
     });
 
-    it('정상 로그인 시 accessToken + user 반환, lastLoginAt 갱신', async () => {
+    it('정상 로그인 시 accessToken + refreshToken + LOGIN_SUCCESS 기록, lockedUntil 리셋', async () => {
       const user = await withHashedUser();
       prisma.user.findUnique.mockResolvedValue(user);
-      prisma.user.update.mockResolvedValue(user);
 
-      const result = await service.login(dto);
+      const result = await service.login(dto, {
+        ipAddress: '10.0.0.1',
+        userAgent: 'mozilla',
+      });
 
       expect(result.accessToken).toBe('signed.jwt.token');
+      expect(result.refreshToken).toMatch(/^[a-f0-9]{96}$/);
       expect(result.user).toEqual({
         id: user.id,
         email: user.email,
@@ -485,8 +553,241 @@ describe('AuthService', () => {
       });
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: user.id },
-        data: { lastLoginAt: expect.any(Date) },
+        data: { lastLoginAt: expect.any(Date), lockedUntil: null },
       });
+      expect(prisma.loginAttempt.create).toHaveBeenCalledWith({
+        data: { email: dto.email, success: true, ipAddress: '10.0.0.1' },
+      });
+      expect(findAuditCall('LOGIN_SUCCESS')).toBeDefined();
+
+      // Refresh Token은 SHA-256 해시로 저장되어야 한다 (평문 그대로 저장 금지).
+      const rtCall = prisma.refreshToken.create.mock.calls[0]?.[0] as {
+        data: { tokenHash: string; userId: string; expiresAt: Date };
+      };
+      expect(rtCall.data.userId).toBe(user.id);
+      expect(rtCall.data.tokenHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(rtCall.data.tokenHash).not.toBe(result.refreshToken);
+      // 14d TTL
+      expect(rtCall.data.expiresAt.getTime() - Date.now()).toBeGreaterThan(13 * 86_400_000);
+    });
+
+    it('lockedUntil이 미래면 비밀번호 검증 전에 ACCOUNT_LOCKED(423) 반환', async () => {
+      const lockedUntil = new Date(Date.now() + 10 * 60_000);
+      const user = await withHashedUser({ lockedUntil });
+      prisma.user.findUnique.mockResolvedValue(user);
+
+      let caught: unknown;
+      await service.login(dto).catch((e) => {
+        caught = e;
+      });
+      expect(caught).toBeInstanceOf(HttpException);
+      const err = caught as HttpException;
+      expect(err.getStatus()).toBe(423);
+      const body = err.getResponse() as { code: string; details: { lockedUntil: string } };
+      expect(body.code).toBe('ACCOUNT_LOCKED');
+      expect(body.details.lockedUntil).toBe(lockedUntil.toISOString());
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+      // 잠금 응답이어도 시도 이력은 남긴다.
+      expect(prisma.loginAttempt.create).toHaveBeenCalledWith({
+        data: { email: dto.email, success: false, ipAddress: undefined },
+      });
+    });
+
+    it('마지막 성공 이후 5번째 실패 시 lockedUntil=now+30m + ACCOUNT_LOCKED 감사 기록', async () => {
+      const user = await withHashedUser();
+      prisma.user.findUnique.mockResolvedValue(user);
+      // 직전 성공 이력 없음 — 전체 실패 카운트가 5.
+      prisma.loginAttempt.findFirst.mockResolvedValue(null);
+      prisma.loginAttempt.count.mockResolvedValue(5);
+
+      const before = Date.now();
+      await expect(
+        service.login({ email: dto.email, password: 'WrongPass1!' }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      const after = Date.now();
+
+      const updateCall = prisma.user.update.mock.calls.find(
+        (c) => (c[0] as { data: { lockedUntil?: Date } }).data.lockedUntil instanceof Date,
+      );
+      expect(updateCall).toBeDefined();
+      const lockedUntil = (updateCall?.[0] as { data: { lockedUntil: Date } }).data.lockedUntil;
+      const delta = lockedUntil.getTime() - before;
+      expect(delta).toBeGreaterThanOrEqual(30 * 60_000);
+      expect(lockedUntil.getTime() - after).toBeLessThanOrEqual(30 * 60_000);
+
+      const audit = findAuditCall('ACCOUNT_LOCKED');
+      expect(audit).toBeDefined();
+      const auditArg = audit?.[0] as {
+        data: { actorId?: string | null; payload: { reason: string; failedCount: number } };
+      };
+      expect(auditArg.data.actorId).toBeUndefined();
+      expect(auditArg.data.payload.reason).toBe('LOGIN_MAX_ATTEMPTS_EXCEEDED');
+      expect(auditArg.data.payload.failedCount).toBe(5);
+    });
+
+    it('마지막 성공 이후 실패 4건이면 잠금 없이 LOGIN_FAILED만 기록', async () => {
+      const user = await withHashedUser();
+      prisma.user.findUnique.mockResolvedValue(user);
+      prisma.loginAttempt.findFirst.mockResolvedValue({ attemptedAt: new Date() });
+      prisma.loginAttempt.count.mockResolvedValue(4);
+
+      await expect(
+        service.login({ email: dto.email, password: 'WrongPass1!' }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(
+        prisma.user.update.mock.calls.some(
+          (c) => (c[0] as { data: Record<string, unknown> }).data.lockedUntil instanceof Date,
+        ),
+      ).toBe(false);
+      expect(findAuditCall('ACCOUNT_LOCKED')).toBeUndefined();
+      const failedAudit = findAuditCall('LOGIN_FAILED');
+      expect(failedAudit).toBeDefined();
+      expect(
+        (failedAudit?.[0] as { data: { payload: { failedCount: number } } }).data.payload
+          .failedCount,
+      ).toBe(4);
+    });
+  });
+
+  describe('rotateRefreshToken', () => {
+    function activeUser(overrides: Partial<{ status: UserStatus; lockedUntil: Date | null }> = {}) {
+      return {
+        id: 'uuid-1',
+        email: 'alice@example.com',
+        name: '앨리스',
+        role: UserRole.USER,
+        status: UserStatus.ACTIVE,
+        lockedUntil: null as Date | null,
+        ...overrides,
+      };
+    }
+
+    it('유효한 토큰 회전 시 이전 토큰 revoke + 신규 발급 + 새 accessToken 반환', async () => {
+      const plain = 'plain-rt-value';
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        id: 'rt-old',
+        userId: 'uuid-1',
+        revokedAt: null,
+        expiresAt: new Date(Date.now() + 86_400_000),
+        user: activeUser(),
+      });
+
+      const result = await service.rotateRefreshToken(plain, { ipAddress: '10.0.0.2' });
+
+      expect(prisma.refreshToken.update).toHaveBeenCalledWith({
+        where: { id: 'rt-old' },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(prisma.refreshToken.create).toHaveBeenCalledTimes(1);
+      const createArg = prisma.refreshToken.create.mock.calls[0]?.[0] as {
+        data: { tokenHash: string; userId: string };
+      };
+      expect(createArg.data.userId).toBe('uuid-1');
+      expect(createArg.data.tokenHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(result.accessToken).toBe('signed.jwt.token');
+      expect(result.refreshToken).toMatch(/^[a-f0-9]{96}$/);
+      expect(result.refreshToken).not.toBe(plain);
+    });
+
+    it('쿠키가 없으면 INVALID_REFRESH_TOKEN', async () => {
+      await expect(service.rotateRefreshToken(undefined)).rejects.toMatchObject({
+        response: { code: 'INVALID_REFRESH_TOKEN' },
+      });
+      expect(prisma.refreshToken.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('DB에 없는 토큰이면 INVALID_REFRESH_TOKEN', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue(null);
+      await expect(service.rotateRefreshToken('unknown')).rejects.toMatchObject({
+        response: { code: 'INVALID_REFRESH_TOKEN' },
+      });
+    });
+
+    it('이미 revoke된 토큰은 INVALID_REFRESH_TOKEN (회전 공격 감지 지점)', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        id: 'rt-old',
+        userId: 'uuid-1',
+        revokedAt: new Date(),
+        expiresAt: new Date(Date.now() + 86_400_000),
+        user: activeUser(),
+      });
+      await expect(service.rotateRefreshToken('any')).rejects.toMatchObject({
+        response: { code: 'INVALID_REFRESH_TOKEN' },
+      });
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+    });
+
+    it('만료된 토큰은 REFRESH_TOKEN_EXPIRED', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        id: 'rt-old',
+        userId: 'uuid-1',
+        revokedAt: null,
+        expiresAt: new Date(Date.now() - 1000),
+        user: activeUser(),
+      });
+      await expect(service.rotateRefreshToken('any')).rejects.toMatchObject({
+        response: { code: 'REFRESH_TOKEN_EXPIRED' },
+      });
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+    });
+
+    it('사용자가 ACTIVE가 아니면 INVALID_REFRESH_TOKEN (계정 상태 변동 대응)', async () => {
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        id: 'rt-old',
+        userId: 'uuid-1',
+        revokedAt: null,
+        expiresAt: new Date(Date.now() + 86_400_000),
+        user: activeUser({ status: UserStatus.LOCKED }),
+      });
+      await expect(service.rotateRefreshToken('any')).rejects.toMatchObject({
+        response: { code: 'INVALID_REFRESH_TOKEN' },
+      });
+    });
+
+    it('사용자가 잠금 구간이면 ACCOUNT_LOCKED', async () => {
+      const lockedUntil = new Date(Date.now() + 5 * 60_000);
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        id: 'rt-old',
+        userId: 'uuid-1',
+        revokedAt: null,
+        expiresAt: new Date(Date.now() + 86_400_000),
+        user: activeUser({ lockedUntil }),
+      });
+
+      let caught: unknown;
+      await service.rotateRefreshToken('any').catch((e) => {
+        caught = e;
+      });
+      expect(caught).toBeInstanceOf(HttpException);
+      expect((caught as HttpException).getStatus()).toBe(423);
+    });
+  });
+
+  describe('logout', () => {
+    it('쿠키가 있으면 본인 소유 + 살아있는 토큰만 revoke + LOGOUT 감사', async () => {
+      await service.logout('uuid-1', 'plain-rt-value', '10.0.0.3');
+
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: {
+          tokenHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          userId: 'uuid-1',
+          revokedAt: null,
+        },
+        data: { revokedAt: expect.any(Date) },
+      });
+      const audit = prisma.auditLog.create.mock.calls[0]?.[0] as {
+        data: { action: string; actorId: string; targetType: string };
+      };
+      expect(audit.data.action).toBe('LOGOUT');
+      expect(audit.data.actorId).toBe('uuid-1');
+      expect(audit.data.targetType).toBe('USER');
+    });
+
+    it('쿠키가 없어도 감사 로그는 남긴다 (중복 로그아웃 허용)', async () => {
+      await service.logout('uuid-1', undefined);
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -513,6 +814,34 @@ describe('AuthService', () => {
       });
 
       await expect(service.validateJwtUser('uuid-1')).resolves.toBeNull();
+    });
+
+    it('ACTIVE여도 lockedUntil이 미래면 null (잠금 구간 내 재인증 강제)', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'uuid-1',
+        email: 'alice@example.com',
+        role: UserRole.USER,
+        status: UserStatus.ACTIVE,
+        lockedUntil: new Date(Date.now() + 60_000),
+      });
+
+      await expect(service.validateJwtUser('uuid-1')).resolves.toBeNull();
+    });
+
+    it('lockedUntil이 과거면 정상 통과', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'uuid-1',
+        email: 'alice@example.com',
+        role: UserRole.USER,
+        status: UserStatus.ACTIVE,
+        lockedUntil: new Date(Date.now() - 60_000),
+      });
+
+      await expect(service.validateJwtUser('uuid-1')).resolves.toEqual({
+        id: 'uuid-1',
+        email: 'alice@example.com',
+        role: UserRole.USER,
+      });
     });
   });
 });
