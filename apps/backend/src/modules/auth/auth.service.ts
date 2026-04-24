@@ -24,6 +24,8 @@ import { MailService } from '../../infra/mail/mail.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 
 import type { LoginDto } from './dto/login.dto';
+import type { PasswordResetConfirmDto } from './dto/password-reset-confirm.dto';
+import type { PasswordResetRequestDto } from './dto/password-reset-request.dto';
 import type { ResendCodeDto } from './dto/resend-code.dto';
 import type { SignupDto } from './dto/signup.dto';
 import type { VerifyEmailDto } from './dto/verify-email.dto';
@@ -464,6 +466,90 @@ export class AuthService {
   }
 
   // ---------------------------------------------------------------------------
+  // 비밀번호 재설정 요청 — docs/03-api-spec.md §2.7
+  // 계정 열거를 방지하기 위해 어떤 입력이든 예외를 던지지 않는다. 컨트롤러가 항상 200 응답.
+  // ---------------------------------------------------------------------------
+
+  async requestPasswordReset(dto: PasswordResetRequestDto): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+      select: { id: true, email: true, name: true, status: true },
+    });
+    // 존재하지 않거나 ACTIVE가 아닌 계정은 아무것도 하지 않는다 — 외부에서 구분 불가.
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      return;
+    }
+
+    const ttlHours = this.config.get('PASSWORD_RESET_TTL_HOURS', { infer: true });
+    const plainToken = this.generatePasswordResetTokenValue();
+    const tokenHash = this.hashToken(plainToken);
+    const expiresAt = new Date(Date.now() + ttlHours * 60 * 60_000);
+
+    await this.prisma.$transaction(async (tx) => {
+      // 기존 미사용 토큰은 전부 폐기 — 항상 최신 1건만 유효하도록 유지.
+      await tx.passwordReset.deleteMany({
+        where: { userId: user.id, usedAt: null },
+      });
+      await tx.passwordReset.create({
+        data: { userId: user.id, tokenHash, expiresAt },
+      });
+    });
+
+    await this.sendPasswordResetMail(user.email, plainToken, user.name, ttlHours);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 비밀번호 재설정 확정 — docs/03-api-spec.md §2.8
+  // ---------------------------------------------------------------------------
+
+  async confirmPasswordReset(dto: PasswordResetConfirmDto): Promise<void> {
+    // 강도 검사는 DB/해시 부하 전에 선행 — WEAK_PASSWORD는 토큰 유효성과 무관한 입력 오류.
+    this.assertPasswordStrength(dto.newPassword);
+
+    const tokenHash = this.hashToken(dto.token);
+    const reset = await this.prisma.passwordReset.findUnique({ where: { tokenHash } });
+    if (!reset || reset.usedAt) {
+      throw new BadRequestException({
+        code: 'INVALID_RESET_TOKEN',
+        message: '유효하지 않은 재설정 토큰입니다.',
+      });
+    }
+    if (reset.expiresAt.getTime() <= Date.now()) {
+      throw new BadRequestException({
+        code: 'RESET_TOKEN_EXPIRED',
+        message: '재설정 토큰이 만료되었습니다. 다시 요청해주세요.',
+      });
+    }
+
+    const passwordHash = await this.hashPassword(dto.newPassword);
+    const now = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      // usedAt 동시 갱신으로 1회성 보장 — 같은 토큰으로 두 번째 요청은 INVALID_RESET_TOKEN.
+      await tx.passwordReset.update({
+        where: { id: reset.id },
+        data: { usedAt: now },
+      });
+      await tx.user.update({
+        where: { id: reset.userId },
+        data: { passwordHash, lockedUntil: null },
+      });
+      // 비밀번호 변경 시 기존 세션 전부 무효화 — 탈취된 세션으로 접근하지 못하도록.
+      await tx.refreshToken.updateMany({
+        where: { userId: reset.userId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+    });
+
+    await this.writeAuditLog({
+      actorId: reset.userId,
+      action: 'PASSWORD_RESET',
+      targetType: 'USER',
+      targetId: reset.userId,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // JwtStrategy.validate()에서 호출. 토큰은 유효해도 계정이 DELETED/LOCKED 상태면 거절.
   // ---------------------------------------------------------------------------
 
@@ -619,6 +705,27 @@ export class AuthService {
     return randomBytes(48).toString('hex');
   }
 
+  private generatePasswordResetTokenValue(): string {
+    // 32 bytes = 256 bits, hex 64자. 메일에 포함되므로 refresh보다 조금 짧게.
+    return randomBytes(32).toString('hex');
+  }
+
+  private assertPasswordStrength(password: string): void {
+    const minLength = this.config.get('PASSWORD_MIN_LENGTH', { infer: true });
+    if (password.length < minLength) {
+      throw new BadRequestException({
+        code: 'WEAK_PASSWORD',
+        message: `비밀번호는 최소 ${minLength}자 이상이어야 합니다.`,
+      });
+    }
+    if (!/(?=.*[A-Za-z])(?=.*\d)(?=.*[^A-Za-z0-9])/.test(password)) {
+      throw new BadRequestException({
+        code: 'WEAK_PASSWORD',
+        message: '비밀번호는 영문, 숫자, 특수문자를 모두 포함해야 합니다.',
+      });
+    }
+  }
+
   private hashToken(plain: string): string {
     return createHash('sha256').update(plain).digest('hex');
   }
@@ -685,6 +792,48 @@ export class AuthService {
       // 메일 실패는 요청을 막지 않는다 — 사용자는 resend로 재시도 가능.
       this.logger.error(
         `인증 메일 발송 실패: to=${email}`,
+        error instanceof Error ? error.stack : error,
+      );
+    }
+  }
+
+  private async sendPasswordResetMail(
+    email: string,
+    token: string,
+    name: string,
+    ttlHours: number,
+  ): Promise<void> {
+    const appName = this.config.get('MAIL_FROM_NAME', { infer: true });
+    const origins = this.config.get('CORS_ORIGINS', { infer: true });
+    const baseUrl = origins.split(',')[0]?.trim() ?? '';
+    const resetUrl = baseUrl ? `${baseUrl}/reset-password?token=${encodeURIComponent(token)}` : '';
+    const subject = `[${appName}] 비밀번호 재설정 안내`;
+    const text = [
+      `안녕하세요${name ? ` ${name}님` : ''},`,
+      '',
+      `비밀번호 재설정을 요청하셨습니다. ${ttlHours}시간 이내에 아래 링크 또는 토큰으로 진행해주세요.`,
+      '',
+      resetUrl ? `재설정 링크: ${resetUrl}` : undefined,
+      `토큰: ${token}`,
+      '',
+      '본인이 요청하지 않았다면 이 메일을 무시하셔도 됩니다.',
+    ]
+      .filter((line): line is string => line !== undefined)
+      .join('\n');
+
+    try {
+      const html = await this.mailTemplates.render('password-reset', {
+        appName,
+        name,
+        token,
+        resetUrl,
+        ttlHours,
+      });
+      await this.mailService.send({ to: email, subject, text, html });
+    } catch (error) {
+      // 메일 실패는 응답(200)에 영향을 주지 않는다 — 사용자에게는 항상 성공 메시지.
+      this.logger.error(
+        `비밀번호 재설정 메일 발송 실패: to=${email}`,
         error instanceof Error ? error.stack : error,
       );
     }

@@ -26,6 +26,8 @@ import {
   type VerifyEmailResult,
 } from './auth.service';
 import { LoginDto } from './dto/login.dto';
+import { PasswordResetConfirmDto } from './dto/password-reset-confirm.dto';
+import { PasswordResetRequestDto } from './dto/password-reset-request.dto';
 import { ResendCodeDto } from './dto/resend-code.dto';
 import { SignupDto } from './dto/signup.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
@@ -110,6 +112,21 @@ export class AuthController {
     await this.authService.logout(user.id, token, req.ip);
     // clearCookie는 set 시 쓴 옵션과 동일해야 브라우저에서 정상 삭제됨.
     res.clearCookie(REFRESH_TOKEN_COOKIE, this.baseCookieOptions());
+  }
+
+  @Post('password-reset/request')
+  @HttpCode(HttpStatus.OK)
+  async requestPasswordReset(@Body() dto: PasswordResetRequestDto): Promise<{ message: string }> {
+    await this.authService.requestPasswordReset(dto);
+    // 계정 열거 방지 — 서비스 결과와 무관하게 항상 같은 본문.
+    return { message: '이메일이 발송되었습니다.' };
+  }
+
+  @Post('password-reset/confirm')
+  @HttpCode(HttpStatus.OK)
+  async confirmPasswordReset(@Body() dto: PasswordResetConfirmDto): Promise<{ message: string }> {
+    await this.authService.confirmPasswordReset(dto);
+    return { message: '비밀번호가 변경되었습니다.' };
   }
 
   @Get('me')

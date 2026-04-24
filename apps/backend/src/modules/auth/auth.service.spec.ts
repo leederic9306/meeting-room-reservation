@@ -17,6 +17,8 @@ import { PrismaService } from '../../infra/prisma/prisma.service';
 
 import { AuthService } from './auth.service';
 import type { LoginDto } from './dto/login.dto';
+import type { PasswordResetConfirmDto } from './dto/password-reset-confirm.dto';
+import type { PasswordResetRequestDto } from './dto/password-reset-request.dto';
 import type { ResendCodeDto } from './dto/resend-code.dto';
 import type { SignupDto } from './dto/signup.dto';
 import type { VerifyEmailDto } from './dto/verify-email.dto';
@@ -34,6 +36,12 @@ type TxClient = {
   refreshToken: {
     create: jest.Mock;
     update: jest.Mock;
+    updateMany: jest.Mock;
+  };
+  passwordReset: {
+    create: jest.Mock;
+    update: jest.Mock;
+    deleteMany: jest.Mock;
   };
 };
 
@@ -56,6 +64,12 @@ describe('AuthService', () => {
       findUnique: jest.Mock;
       update: jest.Mock;
       updateMany: jest.Mock;
+    };
+    passwordReset: {
+      create: jest.Mock;
+      findUnique: jest.Mock;
+      update: jest.Mock;
+      deleteMany: jest.Mock;
     };
     loginAttempt: {
       create: jest.Mock;
@@ -84,6 +98,9 @@ describe('AuthService', () => {
     LOGIN_MAX_ATTEMPTS: 5,
     LOGIN_LOCK_MINUTES: 30,
     JWT_REFRESH_EXPIRES_IN: '14d',
+    PASSWORD_RESET_TTL_HOURS: 1,
+    PASSWORD_MIN_LENGTH: 8,
+    CORS_ORIGINS: 'http://localhost:3000',
   };
   const configGet = jest.fn((key: string) => envValues[key]);
 
@@ -106,6 +123,12 @@ describe('AuthService', () => {
         update: jest.fn().mockResolvedValue(undefined),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
+      passwordReset: {
+        create: jest.fn().mockResolvedValue({ id: 'pr-new' }),
+        findUnique: jest.fn(),
+        update: jest.fn().mockResolvedValue(undefined),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
       loginAttempt: {
         create: jest.fn().mockResolvedValue(undefined),
         findFirst: jest.fn().mockResolvedValue(null),
@@ -126,6 +149,12 @@ describe('AuthService', () => {
             refreshToken: {
               create: prisma.refreshToken.create,
               update: prisma.refreshToken.update,
+              updateMany: prisma.refreshToken.updateMany,
+            },
+            passwordReset: {
+              create: prisma.passwordReset.create,
+              update: prisma.passwordReset.update,
+              deleteMany: prisma.passwordReset.deleteMany,
             },
           };
           return arg(tx);
@@ -842,6 +871,197 @@ describe('AuthService', () => {
         email: 'alice@example.com',
         role: UserRole.USER,
       });
+    });
+  });
+
+  describe('requestPasswordReset', () => {
+    const dto: PasswordResetRequestDto = { email: 'alice@example.com' };
+
+    function activeUserRow() {
+      return {
+        id: 'uuid-1',
+        email: dto.email,
+        name: '앨리스',
+        status: UserStatus.ACTIVE,
+      };
+    }
+
+    it('ACTIVE 사용자면 기존 미사용 토큰 삭제 + 신규 PasswordReset 생성 + 메일 발송', async () => {
+      prisma.user.findUnique.mockResolvedValue(activeUserRow());
+
+      await service.requestPasswordReset(dto);
+
+      expect(prisma.passwordReset.deleteMany).toHaveBeenCalledWith({
+        where: { userId: 'uuid-1', usedAt: null },
+      });
+      expect(prisma.passwordReset.create).toHaveBeenCalledTimes(1);
+      const createArg = prisma.passwordReset.create.mock.calls[0]?.[0] as {
+        data: { userId: string; tokenHash: string; expiresAt: Date };
+      };
+      expect(createArg.data.userId).toBe('uuid-1');
+      // 평문 토큰을 저장하지 않고 SHA-256 해시만 남겨야 한다.
+      expect(createArg.data.tokenHash).toMatch(/^[a-f0-9]{64}$/);
+      // 1시간 TTL (PASSWORD_RESET_TTL_HOURS=1)
+      expect(createArg.data.expiresAt.getTime() - Date.now()).toBeGreaterThan(55 * 60_000);
+      expect(createArg.data.expiresAt.getTime() - Date.now()).toBeLessThanOrEqual(
+        60 * 60_000 + 1000,
+      );
+
+      expect(mailTemplates.render).toHaveBeenCalledWith(
+        'password-reset',
+        expect.objectContaining({
+          name: '앨리스',
+          ttlHours: 1,
+          token: expect.stringMatching(/^[a-f0-9]{64}$/),
+          resetUrl: expect.stringContaining('http://localhost:3000/reset-password?token='),
+        }),
+      );
+      expect(mail.send).toHaveBeenCalledTimes(1);
+      const mailArg = mail.send.mock.calls[0]?.[0] as { to: string; text: string };
+      expect(mailArg.to).toBe(dto.email);
+      // 메일 본문은 평문 토큰을 포함하지만 DB에는 해시만 저장됐는지 위에서 확인.
+      expect(mailArg.text).toMatch(/[a-f0-9]{64}/);
+    });
+
+    it('존재하지 않는 이메일은 아무 것도 하지 않고 조용히 리턴 (계정 열거 방지)', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await expect(service.requestPasswordReset(dto)).resolves.toBeUndefined();
+      expect(prisma.passwordReset.create).not.toHaveBeenCalled();
+      expect(prisma.passwordReset.deleteMany).not.toHaveBeenCalled();
+      expect(mail.send).not.toHaveBeenCalled();
+    });
+
+    it('PENDING 등 비ACTIVE 계정도 메일/토큰 생성 없이 조용히 리턴', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...activeUserRow(),
+        status: UserStatus.PENDING,
+      });
+
+      await expect(service.requestPasswordReset(dto)).resolves.toBeUndefined();
+      expect(prisma.passwordReset.create).not.toHaveBeenCalled();
+      expect(mail.send).not.toHaveBeenCalled();
+    });
+
+    it('메일 발송이 실패해도 예외를 전파하지 않는다', async () => {
+      prisma.user.findUnique.mockResolvedValue(activeUserRow());
+      mail.send.mockRejectedValueOnce(new Error('smtp down'));
+
+      await expect(service.requestPasswordReset(dto)).resolves.toBeUndefined();
+      expect(prisma.passwordReset.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('confirmPasswordReset', () => {
+    const plainToken = 'a'.repeat(64); // 테스트용 — 실제 구현은 난수 hex.
+    const dto: PasswordResetConfirmDto = {
+      token: plainToken,
+      newPassword: 'NewPassword1!',
+    };
+
+    async function tokenHashOf(plain: string): Promise<string> {
+      const { createHash } = await import('node:crypto');
+      return createHash('sha256').update(plain).digest('hex');
+    }
+
+    it('정상 토큰이면 비번 갱신 + usedAt 기록 + 모든 RefreshToken revoke + 감사 로그', async () => {
+      const hash = await tokenHashOf(plainToken);
+      prisma.passwordReset.findUnique.mockResolvedValue({
+        id: 'pr-1',
+        userId: 'uuid-1',
+        tokenHash: hash,
+        usedAt: null,
+        expiresAt: new Date(Date.now() + 30 * 60_000),
+      });
+      prisma.user.update.mockResolvedValue(undefined);
+
+      await service.confirmPasswordReset(dto);
+
+      expect(prisma.passwordReset.findUnique).toHaveBeenCalledWith({ where: { tokenHash: hash } });
+      expect(prisma.passwordReset.update).toHaveBeenCalledWith({
+        where: { id: 'pr-1' },
+        data: { usedAt: expect.any(Date) },
+      });
+
+      const userUpdate = prisma.user.update.mock.calls[0]?.[0] as {
+        where: { id: string };
+        data: { passwordHash: string; lockedUntil: null };
+      };
+      expect(userUpdate.where.id).toBe('uuid-1');
+      expect(userUpdate.data.passwordHash).toMatch(/^\$argon2id\$/);
+      expect(userUpdate.data.passwordHash).not.toContain(dto.newPassword);
+      expect(userUpdate.data.lockedUntil).toBeNull();
+
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'uuid-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+
+      const audit = prisma.auditLog.create.mock.calls[0]?.[0] as {
+        data: { action: string; actorId: string; targetId: string };
+      };
+      expect(audit.data.action).toBe('PASSWORD_RESET');
+      expect(audit.data.actorId).toBe('uuid-1');
+      expect(audit.data.targetId).toBe('uuid-1');
+    });
+
+    it('DB에 없는 토큰은 INVALID_RESET_TOKEN', async () => {
+      prisma.passwordReset.findUnique.mockResolvedValue(null);
+
+      await expect(service.confirmPasswordReset(dto)).rejects.toMatchObject({
+        response: { code: 'INVALID_RESET_TOKEN' },
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('이미 usedAt이 채워진 토큰은 INVALID_RESET_TOKEN (재사용 차단)', async () => {
+      prisma.passwordReset.findUnique.mockResolvedValue({
+        id: 'pr-1',
+        userId: 'uuid-1',
+        tokenHash: await tokenHashOf(plainToken),
+        usedAt: new Date(),
+        expiresAt: new Date(Date.now() + 30 * 60_000),
+      });
+
+      await expect(service.confirmPasswordReset(dto)).rejects.toMatchObject({
+        response: { code: 'INVALID_RESET_TOKEN' },
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('만료된 토큰은 RESET_TOKEN_EXPIRED', async () => {
+      prisma.passwordReset.findUnique.mockResolvedValue({
+        id: 'pr-1',
+        userId: 'uuid-1',
+        tokenHash: await tokenHashOf(plainToken),
+        usedAt: null,
+        expiresAt: new Date(Date.now() - 1000),
+      });
+
+      await expect(service.confirmPasswordReset(dto)).rejects.toMatchObject({
+        response: { code: 'RESET_TOKEN_EXPIRED' },
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('짧은 새 비밀번호는 WEAK_PASSWORD — 토큰 조회 전에 차단', async () => {
+      await expect(
+        service.confirmPasswordReset({ token: plainToken, newPassword: 'short1!' }),
+      ).rejects.toMatchObject({
+        response: { code: 'WEAK_PASSWORD' },
+      });
+      expect(prisma.passwordReset.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('문자 구성 미달(숫자/특수문자 누락)은 WEAK_PASSWORD', async () => {
+      await expect(
+        service.confirmPasswordReset({ token: plainToken, newPassword: 'onlyletters' }),
+      ).rejects.toMatchObject({
+        response: { code: 'WEAK_PASSWORD' },
+      });
+      expect(prisma.passwordReset.findUnique).not.toHaveBeenCalled();
     });
   });
 });
