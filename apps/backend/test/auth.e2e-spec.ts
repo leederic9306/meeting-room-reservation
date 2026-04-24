@@ -1,0 +1,722 @@
+import { randomUUID } from 'node:crypto';
+
+import { type INestApplication, ValidationPipe } from '@nestjs/common';
+import { Test, type TestingModule } from '@nestjs/testing';
+import { UserRole, UserStatus } from '@prisma/client';
+import request from 'supertest';
+
+import { AppModule } from '../src/app.module';
+import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
+import { EnvelopeInterceptor } from '../src/common/interceptors/envelope.interceptor';
+import { MailService, type SendMailOptions } from '../src/infra/mail/mail.service';
+import { PrismaService } from '../src/infra/prisma/prisma.service';
+
+// 필수 환경변수 — AppModule이 로드되기 전에 세팅해야 env.validation을 통과한다.
+process.env.DATABASE_URL ??= 'postgresql://test:test@localhost:5432/test';
+process.env.JWT_ACCESS_SECRET ??= 'test-access-secret-min-16chars-long';
+process.env.JWT_REFRESH_SECRET ??= 'test-refresh-secret-min-16chars-long';
+process.env.MAIL_FROM ??= 'noreply@test.local';
+process.env.EMAIL_CODE_HASH_ENABLED ??= 'false';
+process.env.EMAIL_CODE_RESEND_COOLDOWN_SECONDS ??= '60';
+process.env.EMAIL_CODE_MAX_ATTEMPTS ??= '5';
+process.env.EMAIL_CODE_TTL_MINUTES ??= '10';
+
+interface UserRow {
+  id: string;
+  email: string;
+  passwordHash: string;
+  name: string;
+  department: string | null;
+  employeeNo: string | null;
+  phone: string | null;
+  role: UserRole;
+  status: UserStatus;
+  lockedUntil: Date | null;
+  lastLoginAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface EmailVerificationRow {
+  id: string;
+  userId: string;
+  code: string;
+  expiresAt: Date;
+  attemptCount: number;
+  verifiedAt: Date | null;
+  sentAt: Date;
+}
+
+interface RefreshTokenRow {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  userAgent: string | null;
+  ipAddress: string | null;
+  expiresAt: Date;
+  revokedAt: Date | null;
+  createdAt: Date;
+}
+
+interface LoginAttemptRow {
+  id: string;
+  email: string;
+  ipAddress: string | null;
+  success: boolean;
+  attemptedAt: Date;
+}
+
+interface AuditLogRow {
+  id: string;
+  actorId: string | null;
+  action: string;
+  targetType: string;
+  targetId: string | null;
+  payload: unknown;
+  ipAddress: string | null;
+  createdAt: Date;
+}
+
+/**
+ * 작은 인메모리 Prisma 더블. 테스트에 필요한 메서드만 구현한다.
+ * $transaction은 동일 인스턴스를 tx로 전달해 컨트랙트만 유지한다.
+ */
+class InMemoryPrisma {
+  users: UserRow[] = [];
+  emailVerifications: EmailVerificationRow[] = [];
+  refreshTokens: RefreshTokenRow[] = [];
+  loginAttempts: LoginAttemptRow[] = [];
+  auditLogs: AuditLogRow[] = [];
+
+  user = {
+    findUnique: async ({ where }: { where: { id?: string; email?: string } }) => {
+      return (
+        this.users.find((u) =>
+          where.id !== undefined ? u.id === where.id : u.email === where.email,
+        ) ?? null
+      );
+    },
+    create: async ({ data }: { data: Partial<UserRow> & { email: string; name: string } }) => {
+      const row: UserRow = {
+        id: randomUUID(),
+        email: data.email,
+        passwordHash: data.passwordHash ?? '',
+        name: data.name,
+        department: data.department ?? null,
+        employeeNo: data.employeeNo ?? null,
+        phone: data.phone ?? null,
+        role: data.role ?? UserRole.USER,
+        status: data.status ?? UserStatus.PENDING,
+        lockedUntil: data.lockedUntil ?? null,
+        lastLoginAt: data.lastLoginAt ?? null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      this.users.push(row);
+      return row;
+    },
+    update: async ({ where, data }: { where: { id: string }; data: Partial<UserRow> }) => {
+      const user = this.users.find((u) => u.id === where.id);
+      if (!user) throw new Error(`user not found: ${where.id}`);
+      Object.assign(user, data, { updatedAt: new Date() });
+      return user;
+    },
+    deleteMany: async () => ({ count: 0 }),
+  };
+
+  emailVerification = {
+    findFirst: async ({
+      where,
+      orderBy,
+    }: {
+      where: { userId: string; verifiedAt?: Date | null };
+      orderBy?: { sentAt: 'asc' | 'desc' };
+    }) => {
+      let rows = this.emailVerifications.filter((r) => r.userId === where.userId);
+      if (where.verifiedAt === null) rows = rows.filter((r) => r.verifiedAt === null);
+      rows = [...rows].sort((a, b) =>
+        orderBy?.sentAt === 'desc'
+          ? b.sentAt.getTime() - a.sentAt.getTime()
+          : a.sentAt.getTime() - b.sentAt.getTime(),
+      );
+      return rows[0] ?? null;
+    },
+    create: async ({
+      data,
+    }: {
+      data: { userId: string; code: string; expiresAt: Date; sentAt?: Date };
+    }) => {
+      const row: EmailVerificationRow = {
+        id: randomUUID(),
+        userId: data.userId,
+        code: data.code,
+        expiresAt: data.expiresAt,
+        attemptCount: 0,
+        verifiedAt: null,
+        sentAt: data.sentAt ?? new Date(),
+      };
+      this.emailVerifications.push(row);
+      return { ...row, user: { email: this.users.find((u) => u.id === row.userId)?.email } };
+    },
+    update: async ({
+      where,
+      data,
+    }: {
+      where: { id: string };
+      data: Partial<EmailVerificationRow>;
+    }) => {
+      const row = this.emailVerifications.find((r) => r.id === where.id);
+      if (!row) throw new Error(`verification not found: ${where.id}`);
+      Object.assign(row, data);
+      return row;
+    },
+    deleteMany: async ({ where }: { where: { userId: string; verifiedAt?: Date | null } }) => {
+      const before = this.emailVerifications.length;
+      this.emailVerifications = this.emailVerifications.filter(
+        (r) => !(r.userId === where.userId && (where.verifiedAt !== null || r.verifiedAt === null)),
+      );
+      return { count: before - this.emailVerifications.length };
+    },
+  };
+
+  refreshToken = {
+    create: async ({
+      data,
+    }: {
+      data: {
+        userId: string;
+        tokenHash: string;
+        userAgent?: string | null;
+        ipAddress?: string | null;
+        expiresAt: Date;
+      };
+    }) => {
+      const row: RefreshTokenRow = {
+        id: randomUUID(),
+        userId: data.userId,
+        tokenHash: data.tokenHash,
+        userAgent: data.userAgent ?? null,
+        ipAddress: data.ipAddress ?? null,
+        expiresAt: data.expiresAt,
+        revokedAt: null,
+        createdAt: new Date(),
+      };
+      this.refreshTokens.push(row);
+      return row;
+    },
+    findUnique: async ({
+      where,
+      include,
+    }: {
+      where: { tokenHash: string };
+      include?: { user?: boolean };
+    }) => {
+      const row = this.refreshTokens.find((r) => r.tokenHash === where.tokenHash);
+      if (!row) return null;
+      if (include?.user) {
+        const user = this.users.find((u) => u.id === row.userId);
+        return { ...row, user };
+      }
+      return row;
+    },
+    update: async ({ where, data }: { where: { id: string }; data: Partial<RefreshTokenRow> }) => {
+      const row = this.refreshTokens.find((r) => r.id === where.id);
+      if (!row) throw new Error(`refresh token not found: ${where.id}`);
+      Object.assign(row, data);
+      return row;
+    },
+    updateMany: async ({
+      where,
+      data,
+    }: {
+      where: { tokenHash: string; userId: string; revokedAt: null };
+      data: Partial<RefreshTokenRow>;
+    }) => {
+      let count = 0;
+      for (const row of this.refreshTokens) {
+        if (
+          row.tokenHash === where.tokenHash &&
+          row.userId === where.userId &&
+          row.revokedAt === null
+        ) {
+          Object.assign(row, data);
+          count += 1;
+        }
+      }
+      return { count };
+    },
+  };
+
+  loginAttempt = {
+    create: async ({
+      data,
+    }: {
+      data: { email: string; success: boolean; ipAddress?: string | null };
+    }) => {
+      const row: LoginAttemptRow = {
+        id: randomUUID(),
+        email: data.email,
+        ipAddress: data.ipAddress ?? null,
+        success: data.success,
+        attemptedAt: new Date(),
+      };
+      this.loginAttempts.push(row);
+      return row;
+    },
+    findFirst: async ({
+      where,
+      orderBy,
+    }: {
+      where: { email: string; success: boolean };
+      orderBy?: { attemptedAt: 'asc' | 'desc' };
+      select?: unknown;
+    }) => {
+      const rows = this.loginAttempts
+        .filter((r) => r.email === where.email && r.success === where.success)
+        .sort((a, b) =>
+          orderBy?.attemptedAt === 'desc'
+            ? b.attemptedAt.getTime() - a.attemptedAt.getTime()
+            : a.attemptedAt.getTime() - b.attemptedAt.getTime(),
+        );
+      return rows[0] ?? null;
+    },
+    count: async ({
+      where,
+    }: {
+      where: { email: string; success: boolean; attemptedAt?: { gt: Date } };
+    }) => {
+      return this.loginAttempts.filter((r) => {
+        if (r.email !== where.email) return false;
+        if (r.success !== where.success) return false;
+        if (where.attemptedAt && r.attemptedAt.getTime() <= where.attemptedAt.gt.getTime()) {
+          return false;
+        }
+        return true;
+      }).length;
+    },
+  };
+
+  auditLog = {
+    create: async ({
+      data,
+    }: {
+      data: {
+        actorId?: string | null;
+        action: string;
+        targetType: string;
+        targetId?: string | null;
+        payload?: unknown;
+        ipAddress?: string | null;
+      };
+    }) => {
+      const row: AuditLogRow = {
+        id: randomUUID(),
+        actorId: data.actorId ?? null,
+        action: data.action,
+        targetType: data.targetType,
+        targetId: data.targetId ?? null,
+        payload: data.payload ?? null,
+        ipAddress: data.ipAddress ?? null,
+        createdAt: new Date(),
+      };
+      this.auditLogs.push(row);
+      return row;
+    },
+  };
+
+  async $transaction<T>(
+    arg: ((tx: InMemoryPrisma) => Promise<T>) | Promise<T>[],
+  ): Promise<T | T[]> {
+    if (typeof arg === 'function') {
+      return arg(this);
+    }
+    return Promise.all(arg);
+  }
+
+  async $connect(): Promise<void> {
+    // InMemory는 연결 개념이 없음 — Prisma 컨트랙트만 유지.
+    return Promise.resolve();
+  }
+  async $disconnect(): Promise<void> {
+    return Promise.resolve();
+  }
+  async $queryRaw(): Promise<unknown> {
+    return [];
+  }
+
+  reset(): void {
+    this.users = [];
+    this.emailVerifications = [];
+    this.refreshTokens = [];
+    this.loginAttempts = [];
+    this.auditLogs = [];
+  }
+}
+
+class CapturingMail extends MailService {
+  sent: SendMailOptions[] = [];
+  async send(options: SendMailOptions): Promise<void> {
+    this.sent.push(options);
+  }
+  reset(): void {
+    this.sent = [];
+  }
+}
+
+describe('Auth (e2e)', () => {
+  let app: INestApplication;
+  let prisma: InMemoryPrisma;
+  let mail: CapturingMail;
+
+  const BASE = '/api/v1';
+  const signupBody = {
+    email: 'alice@example.com',
+    password: 'Password1!',
+    name: '앨리스',
+    department: '개발팀',
+  };
+
+  beforeAll(async () => {
+    prisma = new InMemoryPrisma();
+    mail = new CapturingMail();
+
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    })
+      .overrideProvider(PrismaService)
+      .useValue(prisma)
+      .overrideProvider(MailService)
+      .useValue(mail)
+      .compile();
+
+    app = moduleRef.createNestApplication();
+    app.setGlobalPrefix('api/v1', { exclude: ['health'] });
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+        transformOptions: { enableImplicitConversion: true },
+      }),
+    );
+    app.useGlobalInterceptors(new EnvelopeInterceptor());
+    app.useGlobalFilters(new AllExceptionsFilter());
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    prisma.reset();
+    mail.reset();
+  });
+
+  function extractCode(): string {
+    expect(mail.sent).toHaveLength(1);
+    const match = /\b(\d{6})\b/.exec(mail.sent[0]!.text);
+    expect(match).not.toBeNull();
+    return match![1]!;
+  }
+
+  describe('POST /auth/signup', () => {
+    it('유효한 입력 → 201 + verificationRequired=true + 인증 메일 발송', async () => {
+      const res = await request(app.getHttpServer()).post(`${BASE}/auth/signup`).send(signupBody);
+
+      expect(res.status).toBe(201);
+      expect(res.body.data).toMatchObject({
+        email: signupBody.email,
+        verificationRequired: true,
+      });
+      expect(typeof res.body.data.userId).toBe('string');
+      expect(typeof res.body.data.codeSentAt).toBe('string');
+      expect(mail.sent).toHaveLength(1);
+      expect(mail.sent[0]!.to).toBe(signupBody.email);
+      // 응답 바디에 코드 자체를 포함하지 않아야 한다.
+      expect(JSON.stringify(res.body)).not.toMatch(/\b\d{6}\b/);
+    });
+
+    it('비밀번호 약하면 VALIDATION_ERROR', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`${BASE}/auth/signup`)
+        .send({ ...signupBody, password: 'weak' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('이메일 중복 → 409 EMAIL_ALREADY_EXISTS', async () => {
+      await request(app.getHttpServer()).post(`${BASE}/auth/signup`).send(signupBody).expect(201);
+      const res = await request(app.getHttpServer()).post(`${BASE}/auth/signup`).send(signupBody);
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('EMAIL_ALREADY_EXISTS');
+    });
+  });
+
+  describe('POST /auth/verify-email', () => {
+    beforeEach(async () => {
+      await request(app.getHttpServer()).post(`${BASE}/auth/signup`).send(signupBody).expect(201);
+    });
+
+    it('정상 코드 → 200 + accessToken + user + status=ACTIVE', async () => {
+      const code = extractCode();
+
+      const res = await request(app.getHttpServer())
+        .post(`${BASE}/auth/verify-email`)
+        .send({ email: signupBody.email, code });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.verified).toBe(true);
+      expect(typeof res.body.data.accessToken).toBe('string');
+      expect(res.body.data.user).toMatchObject({
+        email: signupBody.email,
+        name: signupBody.name,
+        role: 'USER',
+      });
+      const user = await prisma.user.findUnique({ where: { email: signupBody.email } });
+      expect(user?.status).toBe(UserStatus.ACTIVE);
+    });
+
+    it('잘못된 코드 5회 → 5번째는 CODE_ATTEMPTS_EXCEEDED', async () => {
+      const wrong = { email: signupBody.email, code: '000000' };
+      for (let i = 0; i < 4; i += 1) {
+        const res = await request(app.getHttpServer())
+          .post(`${BASE}/auth/verify-email`)
+          .send(wrong);
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('INVALID_CODE');
+      }
+      const last = await request(app.getHttpServer()).post(`${BASE}/auth/verify-email`).send(wrong);
+      expect(last.status).toBe(400);
+      expect(last.body.error.code).toBe('CODE_ATTEMPTS_EXCEEDED');
+    });
+
+    it('이미 인증된 계정 → 409 ALREADY_VERIFIED', async () => {
+      const code = extractCode();
+      await request(app.getHttpServer())
+        .post(`${BASE}/auth/verify-email`)
+        .send({ email: signupBody.email, code })
+        .expect(200);
+
+      const res = await request(app.getHttpServer())
+        .post(`${BASE}/auth/verify-email`)
+        .send({ email: signupBody.email, code });
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('ALREADY_VERIFIED');
+    });
+  });
+
+  describe('POST /auth/login → /auth/refresh → /auth/logout', () => {
+    const loginBody = { email: signupBody.email, password: signupBody.password };
+
+    async function completeSignupAndVerify(): Promise<void> {
+      await request(app.getHttpServer()).post(`${BASE}/auth/signup`).send(signupBody).expect(201);
+      const code = extractCode();
+      await request(app.getHttpServer())
+        .post(`${BASE}/auth/verify-email`)
+        .send({ email: signupBody.email, code })
+        .expect(200);
+      mail.reset();
+    }
+
+    function refreshCookieFrom(res: request.Response): string | undefined {
+      const header = res.headers['set-cookie'];
+      if (!header) return undefined;
+      const lines = Array.isArray(header) ? header : [header];
+      for (const line of lines) {
+        const match = /^refresh_token=([^;]+)/.exec(line);
+        if (match) return match[1];
+      }
+      return undefined;
+    }
+
+    function refreshSetCookieLine(res: request.Response): string | undefined {
+      const header = res.headers['set-cookie'];
+      if (!header) return undefined;
+      const lines = Array.isArray(header) ? header : [header];
+      return lines.find((l) => l.startsWith('refresh_token='));
+    }
+
+    it('로그인 → 200 + accessToken 바디 + refresh_token 쿠키(HttpOnly/SameSite=Strict), 바디에 토큰 노출 없음', async () => {
+      await completeSignupAndVerify();
+
+      const res = await request(app.getHttpServer()).post(`${BASE}/auth/login`).send(loginBody);
+
+      expect(res.status).toBe(200);
+      expect(typeof res.body.data.accessToken).toBe('string');
+      expect(res.body.data.user).toMatchObject({ email: signupBody.email, role: 'USER' });
+      // 응답 바디에 refreshToken은 절대 포함되지 않아야 한다.
+      expect(res.body.data.refreshToken).toBeUndefined();
+      expect(JSON.stringify(res.body)).not.toMatch(/refresh/i);
+
+      const cookieLine = refreshSetCookieLine(res);
+      expect(cookieLine).toBeDefined();
+      expect(cookieLine).toMatch(/HttpOnly/i);
+      expect(cookieLine).toMatch(/SameSite=Strict/i);
+      expect(cookieLine).toMatch(/Path=\//);
+
+      // DB에는 평문이 아닌 SHA-256 해시(64 hex)로 저장되어야 한다.
+      expect(prisma.refreshTokens).toHaveLength(1);
+      const stored = prisma.refreshTokens[0]!;
+      expect(stored.tokenHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(stored.tokenHash).not.toBe(refreshCookieFrom(res));
+      expect(stored.revokedAt).toBeNull();
+
+      // LoginAttempt(success) + AuditLog(LOGIN_SUCCESS) 기록 확인.
+      expect(prisma.loginAttempts.some((a) => a.email === signupBody.email && a.success)).toBe(
+        true,
+      );
+      expect(prisma.auditLogs.some((a) => a.action === 'LOGIN_SUCCESS')).toBe(true);
+    });
+
+    it('비밀번호 5회 연속 실패 → 5번째는 423 ACCOUNT_LOCKED + lockedUntil 설정', async () => {
+      await completeSignupAndVerify();
+
+      for (let i = 0; i < 4; i += 1) {
+        const res = await request(app.getHttpServer())
+          .post(`${BASE}/auth/login`)
+          .send({ email: signupBody.email, password: 'WrongPass1!' });
+        expect(res.status).toBe(401);
+        expect(res.body.error.code).toBe('INVALID_CREDENTIALS');
+      }
+
+      // 5번째 실패로 실패 누적 5가 되며 lockedUntil이 설정된다. 이어진 로그인은 423을 반환.
+      await request(app.getHttpServer())
+        .post(`${BASE}/auth/login`)
+        .send({ email: signupBody.email, password: 'WrongPass1!' })
+        .expect(401);
+
+      const locked = await request(app.getHttpServer()).post(`${BASE}/auth/login`).send(loginBody);
+      expect(locked.status).toBe(423);
+      expect(locked.body.error.code).toBe('ACCOUNT_LOCKED');
+      expect(typeof locked.body.error.details.lockedUntil).toBe('string');
+
+      const user = await prisma.user.findUnique({ where: { email: signupBody.email } });
+      expect(user?.lockedUntil).toBeInstanceOf(Date);
+      expect(user!.lockedUntil!.getTime()).toBeGreaterThan(Date.now());
+      expect(prisma.auditLogs.some((a) => a.action === 'ACCOUNT_LOCKED')).toBe(true);
+    });
+
+    it('/auth/refresh — 쿠키로 새 accessToken + 회전된 refresh 쿠키, 이전 토큰은 재사용 시 401', async () => {
+      await completeSignupAndVerify();
+
+      const loginRes = await request(app.getHttpServer())
+        .post(`${BASE}/auth/login`)
+        .send(loginBody)
+        .expect(200);
+      const firstCookie = refreshCookieFrom(loginRes);
+      expect(firstCookie).toBeDefined();
+
+      const refreshRes = await request(app.getHttpServer())
+        .post(`${BASE}/auth/refresh`)
+        .set('Cookie', `refresh_token=${firstCookie}`);
+
+      expect(refreshRes.status).toBe(200);
+      expect(typeof refreshRes.body.data.accessToken).toBe('string');
+      const secondCookie = refreshCookieFrom(refreshRes);
+      expect(secondCookie).toBeDefined();
+      expect(secondCookie).not.toBe(firstCookie);
+
+      // 이전 쿠키를 다시 쓰면 INVALID_REFRESH_TOKEN.
+      const replay = await request(app.getHttpServer())
+        .post(`${BASE}/auth/refresh`)
+        .set('Cookie', `refresh_token=${firstCookie}`);
+      expect(replay.status).toBe(401);
+      expect(replay.body.error.code).toBe('INVALID_REFRESH_TOKEN');
+
+      // 회전된 새 쿠키는 한 번 더 회전 가능.
+      const second = await request(app.getHttpServer())
+        .post(`${BASE}/auth/refresh`)
+        .set('Cookie', `refresh_token=${secondCookie}`);
+      expect(second.status).toBe(200);
+    });
+
+    it('쿠키 없이 /auth/refresh → 401 INVALID_REFRESH_TOKEN', async () => {
+      const res = await request(app.getHttpServer()).post(`${BASE}/auth/refresh`);
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('INVALID_REFRESH_TOKEN');
+    });
+
+    it('/auth/logout — 204 + clearCookie + AuditLog, 이후 기존 refresh로 /auth/refresh 시 401', async () => {
+      await completeSignupAndVerify();
+
+      const loginRes = await request(app.getHttpServer())
+        .post(`${BASE}/auth/login`)
+        .send(loginBody)
+        .expect(200);
+      const accessToken = loginRes.body.data.accessToken as string;
+      const cookie = refreshCookieFrom(loginRes)!;
+
+      const logoutRes = await request(app.getHttpServer())
+        .post(`${BASE}/auth/logout`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Cookie', `refresh_token=${cookie}`);
+      expect(logoutRes.status).toBe(204);
+
+      // 쿠키 삭제를 위해 set-cookie에 같은 이름이 빈 값/과거 만료로 내려와야 한다.
+      const clearLine = refreshSetCookieLine(logoutRes);
+      expect(clearLine).toBeDefined();
+      expect(clearLine).toMatch(/refresh_token=;/);
+
+      expect(prisma.refreshTokens[0]!.revokedAt).toBeInstanceOf(Date);
+      expect(prisma.auditLogs.some((a) => a.action === 'LOGOUT')).toBe(true);
+
+      const afterLogout = await request(app.getHttpServer())
+        .post(`${BASE}/auth/refresh`)
+        .set('Cookie', `refresh_token=${cookie}`);
+      expect(afterLogout.status).toBe(401);
+      expect(afterLogout.body.error.code).toBe('INVALID_REFRESH_TOKEN');
+    });
+
+    it('JWT 없이 /auth/logout → 401 UNAUTHORIZED', async () => {
+      const res = await request(app.getHttpServer()).post(`${BASE}/auth/logout`);
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('POST /auth/resend-code', () => {
+    beforeEach(async () => {
+      await request(app.getHttpServer()).post(`${BASE}/auth/signup`).send(signupBody).expect(201);
+      mail.reset(); // 회원가입 메일 제외
+    });
+
+    it('쿨다운 미경과 시 429 RESEND_COOLDOWN + retryAfterSeconds', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`${BASE}/auth/resend-code`)
+        .send({ email: signupBody.email });
+
+      expect(res.status).toBe(429);
+      expect(res.body.error.code).toBe('RESEND_COOLDOWN');
+      expect(res.body.error.details.retryAfterSeconds).toBeGreaterThan(0);
+    });
+
+    it('쿨다운 경과 → 200 + 새 코드 발송 (구 코드 무효화)', async () => {
+      // 직전 signup 시점을 과거로 옮겨 쿨다운 우회
+      prisma.emailVerifications.forEach((ev) => {
+        ev.sentAt = new Date(ev.sentAt.getTime() - 61_000);
+      });
+
+      const res = await request(app.getHttpServer())
+        .post(`${BASE}/auth/resend-code`)
+        .send({ email: signupBody.email });
+
+      expect(res.status).toBe(200);
+      expect(typeof res.body.data.codeSentAt).toBe('string');
+      expect(typeof res.body.data.nextResendAvailableAt).toBe('string');
+      expect(mail.sent).toHaveLength(1);
+      // 오직 1건의 미인증 코드만 남아야 한다 (기존 무효화).
+      const active = prisma.emailVerifications.filter((r) => r.verifiedAt === null);
+      expect(active).toHaveLength(1);
+    });
+
+    it('존재하지 않는 이메일 → 404 USER_NOT_FOUND', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`${BASE}/auth/resend-code`)
+        .send({ email: 'nobody@example.com' });
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('USER_NOT_FOUND');
+    });
+  });
+});
