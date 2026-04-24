@@ -18,14 +18,36 @@ interface AuthState {
   clear: () => void;
 }
 
+// Refresh Token TTL(14일)과 동일. 프런트 미들웨어가 보호 라우트 접근 시
+// "세션이 있을 법함"을 판단하기 위한 비민감 마커(값은 항상 "1").
+const SESSION_COOKIE = 'mr_session';
+const SESSION_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 14;
+
+function writeSessionCookie(): void {
+  if (typeof document === 'undefined') return;
+  const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `${SESSION_COOKIE}=1; Path=/; Max-Age=${SESSION_COOKIE_MAX_AGE_SECONDS}; SameSite=Lax${secure}`;
+}
+
+function eraseSessionCookie(): void {
+  if (typeof document === 'undefined') return;
+  document.cookie = `${SESSION_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`;
+}
+
 export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
       accessToken: undefined,
       user: undefined,
-      setSession: ({ accessToken, user }) => set({ accessToken, user }),
+      setSession: ({ accessToken, user }) => {
+        writeSessionCookie();
+        set({ accessToken, user });
+      },
       setAccessToken: (accessToken) => set({ accessToken }),
-      clear: () => set({ accessToken: undefined, user: undefined }),
+      clear: () => {
+        eraseSessionCookie();
+        set({ accessToken: undefined, user: undefined });
+      },
     }),
     {
       name: 'meeting-room.auth',
