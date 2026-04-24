@@ -4,6 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 
@@ -16,7 +17,17 @@ import { login, loginFormSchema, type LoginFormValues } from '@/lib/api/auth';
 import type { ApiError } from '@/lib/api/axios';
 import { useAuthStore } from '@/stores/auth.store';
 
+// useSearchParams는 Suspense 경계가 없으면 Next.js static export 시 CSR bailout 오류를 냄.
+// 페이지 본체를 감싸 prerender가 통과하도록 구성.
 export default function LoginPage(): JSX.Element {
+  return (
+    <Suspense fallback={null}>
+      <LoginPageContent />
+    </Suspense>
+  );
+}
+
+function LoginPageContent(): JSX.Element {
   const router = useRouter();
   const searchParams = useSearchParams();
   const setSession = useAuthStore((s) => s.setSession);
