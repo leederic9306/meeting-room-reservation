@@ -76,13 +76,19 @@ api.interceptors.response.use(
     const body = error.response?.data;
 
     // 401 → refresh 후 재시도. 단, refresh 자체 401, 또는 이미 재시도한 요청은 제외.
+    // Authorization 헤더 없이 보낸 요청의 401은 "세션 만료"가 아닌 자격 증명 실패(예: login
+    // INVALID_CREDENTIALS)이므로 refresh 흐름을 타지 않고 원 에러를 그대로 통과시킨다.
     const isRefreshCall = original?.url?.includes('/auth/refresh');
+    const hadBearer = Boolean(
+      (original?.headers as Record<string, string> | undefined)?.Authorization,
+    );
     if (
       status === 401 &&
       original &&
       !original._retry &&
       !original._skipAuthRefresh &&
-      !isRefreshCall
+      !isRefreshCall &&
+      hadBearer
     ) {
       original._retry = true;
       try {
