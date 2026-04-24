@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Patch,
   Post,
   Req,
   Res,
@@ -21,15 +22,18 @@ import type { Env } from '../../config/env.validation';
 import {
   AuthService,
   type LoginResult,
+  type MeProfile,
   type ResendCodeResult,
   type SignupResult,
   type VerifyEmailResult,
 } from './auth.service';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { PasswordResetConfirmDto } from './dto/password-reset-confirm.dto';
 import { PasswordResetRequestDto } from './dto/password-reset-request.dto';
 import { ResendCodeDto } from './dto/resend-code.dto';
 import { SignupDto } from './dto/signup.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 
 export const REFRESH_TOKEN_COOKIE = 'refresh_token';
@@ -131,8 +135,27 @@ export class AuthController {
 
   @Get('me')
   @UseGuards(JwtAuthGuard)
-  me(@CurrentUser() user: AuthUser): AuthUser {
-    return user;
+  me(@CurrentUser() user: AuthUser): Promise<MeProfile> {
+    return this.authService.getMe(user.id);
+  }
+
+  @Patch('me')
+  @UseGuards(JwtAuthGuard)
+  updateMe(@CurrentUser() user: AuthUser, @Body() dto: UpdateProfileDto): Promise<MeProfile> {
+    return this.authService.updateProfile(user.id, dto);
+  }
+
+  @Post('me/password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  async changePassword(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: ChangePasswordDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<void> {
+    await this.authService.changePassword(user.id, dto);
+    // 세션 전부 무효화 — 브라우저 쿠키도 즉시 제거해 재로그인을 유도.
+    res.clearCookie(REFRESH_TOKEN_COOKIE, this.baseCookieOptions());
   }
 
   private setRefreshCookie(res: Response, token: string): void {

@@ -16,11 +16,13 @@ import { MailService } from '../../infra/mail/mail.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 
 import { AuthService } from './auth.service';
+import type { ChangePasswordDto } from './dto/change-password.dto';
 import type { LoginDto } from './dto/login.dto';
 import type { PasswordResetConfirmDto } from './dto/password-reset-confirm.dto';
 import type { PasswordResetRequestDto } from './dto/password-reset-request.dto';
 import type { ResendCodeDto } from './dto/resend-code.dto';
 import type { SignupDto } from './dto/signup.dto';
+import type { UpdateProfileDto } from './dto/update-profile.dto';
 import type { VerifyEmailDto } from './dto/verify-email.dto';
 
 type TxClient = {
@@ -1062,6 +1064,236 @@ describe('AuthService', () => {
         response: { code: 'WEAK_PASSWORD' },
       });
       expect(prisma.passwordReset.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getMe', () => {
+    it('사용자 정보를 MeProfile 형태로 반환 (passwordHash 등 민감 필드 제외)', async () => {
+      const createdAt = new Date('2026-04-23T09:00:00Z');
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'uuid-1',
+        email: 'alice@example.com',
+        name: '앨리스',
+        department: '개발팀',
+        employeeNo: 'EMP001',
+        phone: '010-1234-5678',
+        role: UserRole.USER,
+        createdAt,
+      });
+
+      const result = await service.getMe('uuid-1');
+
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { id: 'uuid-1' },
+        select: expect.objectContaining({
+          id: true,
+          email: true,
+          name: true,
+          department: true,
+          employeeNo: true,
+          phone: true,
+          role: true,
+          createdAt: true,
+        }),
+      });
+      // select에 passwordHash가 포함되면 안 된다 — 민감 필드 유출 방지.
+      const selectArg = (
+        prisma.user.findUnique.mock.calls[0]?.[0] as { select: Record<string, boolean> }
+      ).select;
+      expect(selectArg).not.toHaveProperty('passwordHash');
+
+      expect(result).toEqual({
+        id: 'uuid-1',
+        email: 'alice@example.com',
+        name: '앨리스',
+        department: '개발팀',
+        employeeNo: 'EMP001',
+        phone: '010-1234-5678',
+        role: UserRole.USER,
+        createdAt: '2026-04-23T09:00:00.000Z',
+      });
+    });
+
+    it('옵션 필드가 null이면 null 그대로 반환', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'uuid-1',
+        email: 'alice@example.com',
+        name: '앨리스',
+        department: null,
+        employeeNo: null,
+        phone: null,
+        role: UserRole.USER,
+        createdAt: new Date('2026-04-23T09:00:00Z'),
+      });
+
+      const result = await service.getMe('uuid-1');
+
+      expect(result.department).toBeNull();
+      expect(result.employeeNo).toBeNull();
+      expect(result.phone).toBeNull();
+    });
+
+    it('사용자 row가 없으면 USER_NOT_FOUND (JwtAuthGuard 통과 후 race)', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+      await expect(service.getMe('uuid-1')).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('updateProfile', () => {
+    const baseUserRow = {
+      id: 'uuid-1',
+      email: 'alice@example.com',
+      name: '앨리스',
+      department: '개발팀',
+      employeeNo: 'EMP001',
+      phone: '010-1234-5678',
+      role: UserRole.USER,
+      createdAt: new Date('2026-04-23T09:00:00Z'),
+    };
+
+    it('제공된 필드만 user.update에 전달한다 (email/role은 전달되지 않는다)', async () => {
+      prisma.user.update.mockResolvedValue({
+        ...baseUserRow,
+        name: '새앨리스',
+        department: '플랫폼팀',
+        phone: '010-9999-8888',
+      });
+
+      const dto: UpdateProfileDto = {
+        name: '새앨리스',
+        department: '플랫폼팀',
+        phone: '010-9999-8888',
+      };
+      const result = await service.updateProfile('uuid-1', dto);
+
+      expect(prisma.user.update).toHaveBeenCalledTimes(1);
+      const call = prisma.user.update.mock.calls[0]?.[0] as {
+        where: { id: string };
+        data: Record<string, unknown>;
+      };
+      expect(call.where).toEqual({ id: 'uuid-1' });
+      expect(call.data).toEqual({
+        name: '새앨리스',
+        department: '플랫폼팀',
+        phone: '010-9999-8888',
+      });
+      expect(call.data).not.toHaveProperty('email');
+      expect(call.data).not.toHaveProperty('role');
+      expect(call.data).not.toHaveProperty('passwordHash');
+
+      expect(result).toEqual({
+        id: 'uuid-1',
+        email: 'alice@example.com',
+        name: '새앨리스',
+        department: '플랫폼팀',
+        employeeNo: 'EMP001',
+        phone: '010-9999-8888',
+        role: UserRole.USER,
+        createdAt: '2026-04-23T09:00:00.000Z',
+      });
+    });
+
+    it('부분 업데이트 — 미지정 필드는 data에 포함되지 않는다', async () => {
+      prisma.user.update.mockResolvedValue({ ...baseUserRow, phone: '010-0000-0000' });
+
+      await service.updateProfile('uuid-1', { phone: '010-0000-0000' });
+
+      const call = prisma.user.update.mock.calls[0]?.[0] as { data: Record<string, unknown> };
+      expect(call.data).toEqual({ phone: '010-0000-0000' });
+    });
+
+    it('빈 DTO면 data={}로 update 호출 (updatedAt만 갱신 효과)', async () => {
+      prisma.user.update.mockResolvedValue(baseUserRow);
+
+      await service.updateProfile('uuid-1', {});
+
+      const call = prisma.user.update.mock.calls[0]?.[0] as { data: Record<string, unknown> };
+      expect(call.data).toEqual({});
+    });
+  });
+
+  describe('changePassword', () => {
+    const dto: ChangePasswordDto = {
+      currentPassword: 'OldPass1!',
+      newPassword: 'NewPass1!',
+    };
+
+    async function activeUserWithHash(plain: string) {
+      const passwordHash = await service.hashPassword(plain);
+      return { id: 'uuid-1', passwordHash };
+    }
+
+    it('정상 변경 시 새 해시 저장 + 모든 Refresh Token revoke + PASSWORD_CHANGED 감사', async () => {
+      prisma.user.findUnique.mockResolvedValue(await activeUserWithHash(dto.currentPassword));
+
+      await service.changePassword('uuid-1', dto);
+
+      const userUpdate = prisma.user.update.mock.calls[0]?.[0] as {
+        where: { id: string };
+        data: { passwordHash: string };
+      };
+      expect(userUpdate.where.id).toBe('uuid-1');
+      expect(userUpdate.data.passwordHash).toMatch(/^\$argon2id\$/);
+      expect(userUpdate.data.passwordHash).not.toContain(dto.newPassword);
+
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'uuid-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+
+      const audit = prisma.auditLog.create.mock.calls[0]?.[0] as {
+        data: { action: string; actorId: string; targetId: string; targetType: string };
+      };
+      expect(audit.data.action).toBe('PASSWORD_CHANGED');
+      expect(audit.data.actorId).toBe('uuid-1');
+      expect(audit.data.targetId).toBe('uuid-1');
+      expect(audit.data.targetType).toBe('USER');
+    });
+
+    it('현재 비번 불일치면 INVALID_CURRENT_PASSWORD — 비번/토큰 유지', async () => {
+      prisma.user.findUnique.mockResolvedValue(await activeUserWithHash('DifferentPass1!'));
+
+      await expect(service.changePassword('uuid-1', dto)).rejects.toMatchObject({
+        response: { code: 'INVALID_CURRENT_PASSWORD' },
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('새 비번이 짧으면 WEAK_PASSWORD — 현재 비번 확인 후, DB 변경 전에 차단', async () => {
+      prisma.user.findUnique.mockResolvedValue(await activeUserWithHash(dto.currentPassword));
+
+      await expect(
+        service.changePassword('uuid-1', {
+          currentPassword: dto.currentPassword,
+          newPassword: 'short1!',
+        }),
+      ).rejects.toMatchObject({
+        response: { code: 'WEAK_PASSWORD' },
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('새 비번 문자 구성 미달(영문만)도 WEAK_PASSWORD', async () => {
+      prisma.user.findUnique.mockResolvedValue(await activeUserWithHash(dto.currentPassword));
+
+      await expect(
+        service.changePassword('uuid-1', {
+          currentPassword: dto.currentPassword,
+          newPassword: 'onlyletters',
+        }),
+      ).rejects.toMatchObject({
+        response: { code: 'WEAK_PASSWORD' },
+      });
+    });
+
+    it('사용자 row가 없으면 USER_NOT_FOUND', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await expect(service.changePassword('uuid-1', dto)).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
     });
   });
 });

@@ -23,11 +23,13 @@ import { MailTemplateRenderer } from '../../infra/mail/mail-template.renderer';
 import { MailService } from '../../infra/mail/mail.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 
+import type { ChangePasswordDto } from './dto/change-password.dto';
 import type { LoginDto } from './dto/login.dto';
 import type { PasswordResetConfirmDto } from './dto/password-reset-confirm.dto';
 import type { PasswordResetRequestDto } from './dto/password-reset-request.dto';
 import type { ResendCodeDto } from './dto/resend-code.dto';
 import type { SignupDto } from './dto/signup.dto';
+import type { UpdateProfileDto } from './dto/update-profile.dto';
 import type { VerifyEmailDto } from './dto/verify-email.dto';
 
 export interface SignupResult {
@@ -63,6 +65,17 @@ export interface LoginResult {
   /** 서비스 레이어 전용 — 컨트롤러에서 쿠키로 내보내고 응답 바디에는 포함하지 않는다. */
   refreshToken: string;
   user: AuthUser & { name: string };
+}
+
+export interface MeProfile {
+  id: string;
+  email: string;
+  name: string;
+  department: string | null;
+  employeeNo: string | null;
+  phone: string | null;
+  role: UserRole;
+  createdAt: string;
 }
 
 @Injectable()
@@ -546,6 +559,132 @@ export class AuthService {
       action: 'PASSWORD_RESET',
       targetType: 'USER',
       targetId: reset.userId,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // 내 정보 조회 — docs/03-api-spec.md §2.9
+  // ---------------------------------------------------------------------------
+
+  async getMe(userId: string): Promise<MeProfile> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        department: true,
+        employeeNo: true,
+        phone: true,
+        role: true,
+        createdAt: true,
+      },
+    });
+    // JwtAuthGuard 통과 후에도 race(계정 삭제 등)로 사라질 수 있어 방어.
+    if (!user) {
+      throw new NotFoundException({
+        code: 'USER_NOT_FOUND',
+        message: '사용자 정보를 찾을 수 없습니다.',
+      });
+    }
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      department: user.department,
+      employeeNo: user.employeeNo,
+      phone: user.phone,
+      role: user.role,
+      createdAt: user.createdAt.toISOString(),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // 내 정보 수정 — docs/03-api-spec.md §2.10
+  // email/role은 여기서 변경할 수 없다 (별도 엔드포인트).
+  // ---------------------------------------------------------------------------
+
+  async updateProfile(userId: string, dto: UpdateProfileDto): Promise<MeProfile> {
+    const data: Prisma.UserUpdateInput = {};
+    if (dto.name !== undefined) data.name = dto.name;
+    if (dto.department !== undefined) data.department = dto.department;
+    if (dto.phone !== undefined) data.phone = dto.phone;
+
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data,
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        department: true,
+        employeeNo: true,
+        phone: true,
+        role: true,
+        createdAt: true,
+      },
+    });
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      department: user.department,
+      employeeNo: user.employeeNo,
+      phone: user.phone,
+      role: user.role,
+      createdAt: user.createdAt.toISOString(),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // 비밀번호 변경 — docs/03-api-spec.md §2.11
+  // 현재 비번 확인 후 새 비번으로 갱신하고, 모든 Refresh Token을 무효화해
+  // 다른 기기 세션을 강제 종료한다.
+  // ---------------------------------------------------------------------------
+
+  async changePassword(userId: string, dto: ChangePasswordDto): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, passwordHash: true },
+    });
+    if (!user) {
+      throw new NotFoundException({
+        code: 'USER_NOT_FOUND',
+        message: '사용자 정보를 찾을 수 없습니다.',
+      });
+    }
+
+    const currentValid = await this.verifyPassword(user.passwordHash, dto.currentPassword);
+    if (!currentValid) {
+      throw new BadRequestException({
+        code: 'INVALID_CURRENT_PASSWORD',
+        message: '현재 비밀번호가 올바르지 않습니다.',
+      });
+    }
+
+    // 강도 검사는 해시 계산 전에 — WEAK_PASSWORD는 계산 비용 없이 조기 반려.
+    this.assertPasswordStrength(dto.newPassword);
+
+    const passwordHash = await this.hashPassword(dto.newPassword);
+    const now = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: { passwordHash },
+      });
+      // 비밀번호 변경 시 기존 세션 전부 무효화 — 탈취된 세션으로 접근하지 못하도록.
+      await tx.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+    });
+
+    await this.writeAuditLog({
+      actorId: userId,
+      action: 'PASSWORD_CHANGED',
+      targetType: 'USER',
+      targetId: userId,
     });
   }
 
