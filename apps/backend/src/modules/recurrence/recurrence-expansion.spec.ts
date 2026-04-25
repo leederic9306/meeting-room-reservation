@@ -149,15 +149,27 @@ describe('expandRecurrence', () => {
       expect(last.startAt.getTime()).toBeLessThanOrEqual(r.windowEnd.getTime());
     });
 
-    it('정확히 1년 후의 회차는 between([dtstart, +1y], inclusive=true)에 포함됨', () => {
-      // dtstart에서 매년 같은 날짜 — 1년 후 발생 회차가 포함되는지(경계 포함)
+    it('마지막 회차의 endAt은 항상 dtstart + 1y 이내 — DB chk_recurrence_until_max 정렬', () => {
+      // 무제한 DAILY 절단: 마지막 회차 startAt + duration ≤ dtstart + 1y 여야 한다.
+      // (between 끝점을 windowEnd - duration 으로 좁혀 처리)
+      const r = expandRecurrence({
+        rrule: 'FREQ=DAILY',
+        dtstart,
+        durationMinutes: 60,
+      });
+      const last = r.instances[r.instances.length - 1]!;
+      expect(last.endAt.getTime()).toBeLessThanOrEqual(r.windowEnd.getTime());
+    });
+
+    it('1년 경계에 startAt이 정확히 일치하는 회차는 untilAt 초과 방지를 위해 제외', () => {
+      // dtstart=2026-04-27, FREQ=YEARLY;COUNT=2 → 두 번째 회차는 2027-04-27 09:00 (경계).
+      // duration=60분이면 endAt=10:00 > windowEnd → 제외되어 instances=1.
       const r = expandRecurrence({
         rrule: 'FREQ=YEARLY;COUNT=2',
         dtstart,
         durationMinutes: 60,
       });
-      // 첫 회차 + 1년 후 회차 = 2 (윤년 보정 없는 1년 정확 일치 케이스)
-      expect(r.instances.length).toBeGreaterThanOrEqual(1);
+      expect(r.instances).toHaveLength(1);
     });
 
     it('COUNT만 있는 RRULE이 1년 안에 모두 발생하면 truncated=false', () => {

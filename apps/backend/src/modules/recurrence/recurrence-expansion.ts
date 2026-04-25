@@ -64,16 +64,18 @@ export function expandRecurrence(opts: {
 
   const rule = buildRRule(opts.rrule, opts.dtstart);
 
-  // 1년 절단 윤년 버퍼: addYears는 +1년이지만 ms 단위 비교에서 평년/윤년 차로 1일이 빠질 수 있음.
-  // 윤년 안전성을 위해 dtstart + 366일까지 허용 — 단, 1년 정책이 핵심이므로 addYears(1)을 그대로 사용.
   const windowEnd = addYears(opts.dtstart, 1);
   void ONE_YEAR_TRUNCATION_DAYS; // 상수 자체는 의도 표기용. 절단 기준은 addYears(1).
 
-  const fired = rule.between(opts.dtstart, windowEnd, true);
+  const durationMs = opts.durationMinutes * 60_000;
+  // 1년 절단: 마지막 회차의 endAt(=startAt + duration)이 windowEnd를 넘지 않아야 한다.
+  // DB chk_recurrence_until_max(until_at <= start_at + 1년) 위반 방지 — 회차의 startAt 기준
+  // between 경계에서 duration만큼 더 빼서 검색한다.
+  const lastAllowedStart = new Date(windowEnd.getTime() - durationMs);
+  const fired = rule.between(opts.dtstart, lastAllowedStart, true);
   const truncated = wasTruncated(opts.rrule, fired, windowEnd);
 
   const now = opts.now ?? new Date();
-  const durationMs = opts.durationMinutes * 60_000;
 
   const instances: RecurrenceInstance[] = fired.map((startAt, index) => {
     const endAt = new Date(startAt.getTime() + durationMs);

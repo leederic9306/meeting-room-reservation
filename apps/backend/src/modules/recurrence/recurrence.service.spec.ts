@@ -554,6 +554,13 @@ describe('RecurrenceService', () => {
       };
       expect(updateArg.where.id).toBe(matchingBookingId);
       expect(updateArg.data.deletedAt).toBeInstanceOf(Date);
+
+      // DATE 컬럼 저장값은 KST 라벨을 UTC 자정으로 만든 Date여야 한다 — UTC 캐스팅 후
+      // PG가 "2026-05-25"로 저장하도록(라운드트립 시 1일 밀림 방지).
+      const createArg = prisma.recurrenceException.create.mock.calls[0]?.[0] as {
+        data: { excludedDate: Date };
+      };
+      expect(createArg.data.excludedDate.toISOString()).toBe('2026-05-25T00:00:00.000Z');
     });
 
     it('매칭 Booking 없음 → exception만 생성, deletedBookingId=null', async () => {

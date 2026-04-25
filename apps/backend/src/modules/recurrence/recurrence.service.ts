@@ -369,6 +369,11 @@ export class RecurrenceService {
       select: { id: true },
     });
 
+    // DATE 컬럼 저장 — Prisma는 Date를 UTC ISO로 직렬화하고 PG는 UTC 기준으로 DATE 캐스트한다.
+    // KST 자정(`startUtc`)을 그대로 넘기면 UTC 전날 15:00이라 하루가 밀린다 → KST 라벨을
+    // UTC 자정으로 만든 Date를 사용해야 라운드트립 후 동일 일자로 저장/조회된다.
+    const excludedDateUtcMidnight = new Date(`${dto.excludedDate}T00:00:00.000Z`);
+
     // unique([recurrenceId, excludedDate]) — 같은 일자 중복 등록은 P2002로 떨어짐.
     let exception;
     try {
@@ -376,7 +381,7 @@ export class RecurrenceService {
         const created = await tx.recurrenceException.create({
           data: {
             recurrenceId,
-            excludedDate: dayBoundary.startUtc, // DATE 컬럼 — 시간은 무시됨
+            excludedDate: excludedDateUtcMidnight,
             reason: dto.reason,
           },
         });
