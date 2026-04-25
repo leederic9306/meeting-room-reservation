@@ -32,16 +32,18 @@ export function AdminNav(): JSX.Element {
 
   return (
     <nav className="border-b">
-      <ul className="flex gap-1">
+      {/* 모바일: 가로 스크롤. 데스크탑: 일반 flex. -mx로 컨테이너 패딩 보정해 끝까지 스와이프 가능. */}
+      <ul className="-mx-4 flex gap-1 overflow-x-auto px-4 sm:mx-0 sm:px-0">
         {TABS.map((tab) => {
           const active = pathname?.startsWith(tab.href);
           const showBadge = tab.badge === 'pending' && pendingCount > 0;
           return (
-            <li key={tab.href}>
+            <li key={tab.href} className="shrink-0">
               <Link
                 href={tab.href}
                 className={cn(
-                  'inline-flex items-center gap-1.5 border-b-2 px-4 py-2 text-sm font-medium transition-colors',
+                  // min-h-[44px]로 터치 타겟 보장.
+                  'inline-flex min-h-[44px] items-center gap-1.5 whitespace-nowrap border-b-2 px-4 text-sm font-medium transition-colors',
                   active
                     ? 'border-primary text-primary'
                     : 'border-transparent text-muted-foreground hover:text-foreground',
