@@ -1,11 +1,13 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { DoorOpen } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 
 import { RoomFormModal } from '@/components/features/admin/RoomFormModal';
 import { Button } from '@/components/ui/button';
+import { EmptyState, ErrorState, TableSkeletonRows } from '@/components/ui/state-views';
 import { deleteRoom, listAllRooms } from '@/lib/api/admin';
 import type { ApiError } from '@/lib/api/axios';
 import type { RoomDto } from '@/lib/api/bookings';
@@ -81,15 +83,30 @@ export default function AdminRoomsPage(): JSX.Element {
           </thead>
           <tbody>
             {roomsQuery.isLoading ? (
+              <TableSkeletonRows rows={4} columns={6} />
+            ) : roomsQuery.isError ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  불러오는 중...
+                <td colSpan={6} className="px-0 py-0">
+                  <ErrorState
+                    error={roomsQuery.error}
+                    onRetry={() => void roomsQuery.refetch()}
+                    isRetrying={roomsQuery.isFetching}
+                  />
                 </td>
               </tr>
             ) : rooms.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  등록된 회의실이 없습니다.
+                <td colSpan={6} className="px-0 py-0">
+                  <EmptyState
+                    icon={DoorOpen}
+                    title="등록된 회의실이 없습니다"
+                    description="첫 회의실을 등록하면 사용자가 예약할 수 있습니다."
+                    action={
+                      <Button onClick={() => setCreateOpen(true)} disabled={atLimit}>
+                        회의실 추가
+                      </Button>
+                    }
+                  />
                 </td>
               </tr>
             ) : (

@@ -1,12 +1,14 @@
 'use client';
 
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Users } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { EmptyState, ErrorState, TableSkeletonRows } from '@/components/ui/state-views';
 import {
   listAdminUsers,
   updateUserRole,
@@ -153,15 +155,25 @@ export default function AdminUsersPage(): JSX.Element {
           </thead>
           <tbody>
             {usersQuery.isLoading ? (
+              <TableSkeletonRows rows={6} columns={6} />
+            ) : usersQuery.isError ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  불러오는 중...
+                <td colSpan={6} className="px-0 py-0">
+                  <ErrorState
+                    error={usersQuery.error}
+                    onRetry={() => void usersQuery.refetch()}
+                    isRetrying={usersQuery.isFetching}
+                  />
                 </td>
               </tr>
             ) : (data?.data.length ?? 0) === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  조건에 맞는 사용자가 없습니다.
+                <td colSpan={6} className="px-0 py-0">
+                  <EmptyState
+                    icon={Users}
+                    title="조건에 맞는 사용자가 없습니다"
+                    description="검색어나 역할/상태 필터를 비우거나 다른 값으로 시도해 보세요."
+                  />
                 </td>
               </tr>
             ) : (
