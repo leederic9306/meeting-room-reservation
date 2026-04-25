@@ -18,7 +18,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
 import { BookingService } from './booking.service';
-import type { BookingDto } from './dto/booking.dto';
+import type { BookingDto, UpdateBookingResponseDto } from './dto/booking.dto';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { DeleteBookingQuery } from './dto/delete-booking.query';
 import { ListBookingsQuery } from './dto/list-bookings.query';
@@ -53,7 +53,7 @@ export class BookingController {
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateBookingDto,
-  ): Promise<BookingDto> {
+  ): Promise<UpdateBookingResponseDto> {
     return this.bookingService.update(id, dto, { id: user.id, role: user.role });
   }
 

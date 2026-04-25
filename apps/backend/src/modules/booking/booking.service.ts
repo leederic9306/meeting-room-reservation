@@ -9,7 +9,12 @@ import { Prisma, UserRole } from '@prisma/client';
 
 import { PrismaService } from '../../infra/prisma/prisma.service';
 
-import { type BookingDto, type BookingWithRelations, toBookingDto } from './dto/booking.dto';
+import {
+  type BookingDto,
+  type BookingWithRelations,
+  type UpdateBookingResponseDto,
+  toBookingDto,
+} from './dto/booking.dto';
 import type { CreateBookingDto } from './dto/create-booking.dto';
 import { DeleteBookingScope } from './dto/delete-booking.query';
 import type { ListBookingsQuery } from './dto/list-bookings.query';
@@ -136,7 +141,11 @@ export class BookingService {
   // 수정
   // ---------------------------------------------------------------------------
 
-  async update(id: string, dto: UpdateBookingDto, actor: ActorContext): Promise<BookingDto> {
+  async update(
+    id: string,
+    dto: UpdateBookingDto,
+    actor: ActorContext,
+  ): Promise<UpdateBookingResponseDto> {
     const existing = await this.prisma.booking.findFirst({
       where: { id, deletedAt: null },
     });
@@ -175,19 +184,98 @@ export class BookingService {
       this.assertDurationWithinLimit(nextStart, nextEnd);
     }
 
+    const updateData: Prisma.BookingUpdateInput = {
+      ...(dto.title !== undefined && { title: dto.title }),
+      ...(dto.description !== undefined && { description: dto.description }),
+      ...(dto.startAt !== undefined && { startAt: nextStart }),
+      ...(dto.endAt !== undefined && { endAt: nextEnd }),
+    };
+
+    // 반복 회차(recurrenceId !== null) 수정은 자동으로 시리즈에서 분리한다.
+    // docs/03-api-spec.md §4.4 — recurrenceId/Index NULL 처리 + 원 시리즈에 EXDATE 추가.
+    // (단일 예약은 그대로 일반 update)
+    if (existing.recurrenceId !== null) {
+      return await this.detachInstanceAndUpdate(
+        id,
+        existing.recurrenceId,
+        existing.startAt,
+        updateData,
+        actor.id,
+      );
+    }
+
     try {
       const updated = await this.prisma.booking.update({
         where: { id },
-        data: {
-          ...(dto.title !== undefined && { title: dto.title }),
-          ...(dto.description !== undefined && { description: dto.description }),
-          ...(dto.startAt !== undefined && { startAt: nextStart }),
-          ...(dto.endAt !== undefined && { endAt: nextEnd }),
-        },
+        data: updateData,
         include: BOOKING_RELATIONS,
       });
       return toBookingDto(updated as BookingWithRelations, actor.id);
     } catch (error) {
+      throw this.mapPrismaError(error);
+    }
+  }
+
+  /**
+   * 반복 회차를 수정하면서 시리즈에서 분리.
+   * - booking.recurrenceId / recurrenceIndex를 NULL로 만들고 사용자가 보낸 변경을 적용.
+   * - 원 시리즈에 RecurrenceException(excludedDate=원래 시작일의 KST 일자) 추가.
+   * - 같은 일자 EXDATE가 이미 있으면(P2002) 예외만 무시하고 분리는 그대로 수행.
+   *
+   * 트랜잭션 안에서 booking 업데이트와 EXDATE 추가가 함께 일어나야 한다 — 둘 중 하나만
+   * 성공하면 시리즈 펼침 결과와 booking 행이 어긋난다.
+   */
+  private async detachInstanceAndUpdate(
+    id: string,
+    recurrenceId: string,
+    originalStartAt: Date,
+    updateData: Prisma.BookingUpdateInput,
+    viewerId: string,
+  ): Promise<UpdateBookingResponseDto> {
+    const excludedDateUtc = kstDayStartUtc(originalStartAt);
+    const detachData: Prisma.BookingUpdateInput = {
+      ...updateData,
+      recurrence: { disconnect: true },
+      recurrenceIndex: null,
+    };
+
+    try {
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const next = await tx.booking.update({
+          where: { id },
+          data: detachData,
+          include: BOOKING_RELATIONS,
+        });
+        await tx.recurrenceException.create({
+          data: {
+            recurrenceId,
+            excludedDate: excludedDateUtc,
+            reason: null,
+          },
+        });
+        return next;
+      });
+      return {
+        ...toBookingDto(updated as BookingWithRelations, viewerId),
+        detachedFromSeries: true,
+      };
+    } catch (error) {
+      // 같은 일자에 EXDATE가 이미 등록된 경우 — booking 분리만 수행.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        try {
+          const updated = await this.prisma.booking.update({
+            where: { id },
+            data: detachData,
+            include: BOOKING_RELATIONS,
+          });
+          return {
+            ...toBookingDto(updated as BookingWithRelations, viewerId),
+            detachedFromSeries: true,
+          };
+        } catch (fallbackError) {
+          throw this.mapPrismaError(fallbackError);
+        }
+      }
       throw this.mapPrismaError(error);
     }
   }

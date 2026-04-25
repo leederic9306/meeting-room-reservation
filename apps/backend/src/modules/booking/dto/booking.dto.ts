@@ -24,6 +24,15 @@ export type BookingWithRelations = Booking & {
   user: Pick<User, 'id' | 'name' | 'department'>;
 };
 
+/**
+ * PATCH /bookings/:id 응답. 반복 회차를 수정해 시리즈에서 분리된 경우에만
+ * `detachedFromSeries: true`가 포함된다 (그 외에는 필드 자체를 생략).
+ * docs/03-api-spec.md §4.4.
+ */
+export type UpdateBookingResponseDto = BookingDto & {
+  detachedFromSeries?: true;
+};
+
 export function toBookingDto(booking: BookingWithRelations, viewerId: string): BookingDto {
   return {
     id: booking.id,
