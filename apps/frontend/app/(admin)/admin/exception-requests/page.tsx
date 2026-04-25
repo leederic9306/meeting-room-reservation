@@ -1,11 +1,13 @@
 'use client';
 
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ClipboardCheck } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 
 import { RejectExceptionRequestModal } from '@/components/features/admin/RejectExceptionRequestModal';
 import { Button } from '@/components/ui/button';
+import { EmptyState, ErrorState, TableSkeletonRows } from '@/components/ui/state-views';
 import type { ApiError } from '@/lib/api/axios';
 import {
   approveExceptionRequest,
@@ -145,15 +147,33 @@ export default function AdminExceptionRequestsPage(): JSX.Element {
           </thead>
           <tbody>
             {requestsQuery.isLoading ? (
+              <TableSkeletonRows rows={5} columns={6} />
+            ) : requestsQuery.isError ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  불러오는 중...
+                <td colSpan={6} className="px-0 py-0">
+                  <ErrorState
+                    error={requestsQuery.error}
+                    onRetry={() => void requestsQuery.refetch()}
+                    isRetrying={requestsQuery.isFetching}
+                  />
                 </td>
               </tr>
             ) : (data?.data.length ?? 0) === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  조건에 맞는 신청이 없습니다.
+                <td colSpan={6} className="px-0 py-0">
+                  <EmptyState
+                    icon={ClipboardCheck}
+                    title={
+                      filters.status === 'PENDING'
+                        ? '검토 대기 중인 신청이 없습니다'
+                        : '조건에 맞는 신청이 없습니다'
+                    }
+                    description={
+                      filters.status === 'PENDING'
+                        ? '새 예외 신청이 접수되면 여기에 표시됩니다.'
+                        : '다른 상태 필터를 선택해 보세요.'
+                    }
+                  />
                 </td>
               </tr>
             ) : (

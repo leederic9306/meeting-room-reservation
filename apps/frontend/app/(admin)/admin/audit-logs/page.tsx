@@ -1,11 +1,13 @@
 'use client';
 
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { ScrollText } from 'lucide-react';
 import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { EmptyState, ErrorState, TableSkeletonRows } from '@/components/ui/state-views';
 import {
   actionLabel,
   AUDIT_ACTIONS,
@@ -151,15 +153,30 @@ export default function AdminAuditLogsPage(): JSX.Element {
           </thead>
           <tbody>
             {logsQuery.isLoading ? (
+              <TableSkeletonRows rows={6} columns={5} />
+            ) : logsQuery.isError ? (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
-                  불러오는 중...
+                <td colSpan={5} className="px-0 py-0">
+                  <ErrorState
+                    error={logsQuery.error}
+                    onRetry={() => void logsQuery.refetch()}
+                    isRetrying={logsQuery.isFetching}
+                  />
                 </td>
               </tr>
             ) : (data?.data.length ?? 0) === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
-                  조건에 맞는 로그가 없습니다.
+                <td colSpan={5} className="px-0 py-0">
+                  <EmptyState
+                    icon={ScrollText}
+                    title="조건에 맞는 로그가 없습니다"
+                    description="기간이나 액션/대상 필터를 비우거나 더 넓혀 보세요."
+                    action={
+                      <Button type="button" variant="outline" onClick={clearFilters}>
+                        필터 초기화
+                      </Button>
+                    }
+                  />
                 </td>
               </tr>
             ) : (

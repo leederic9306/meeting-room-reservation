@@ -1,10 +1,12 @@
 'use client';
 
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { FileClock } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
+import { EmptyState, ErrorState, TableSkeletonRows } from '@/components/ui/state-views';
 import type { ApiError } from '@/lib/api/axios';
 import {
   cancelExceptionRequest,
@@ -116,15 +118,33 @@ export default function MyRequestsPage(): JSX.Element {
           </thead>
           <tbody>
             {requestsQuery.isLoading ? (
+              <TableSkeletonRows rows={5} columns={6} />
+            ) : requestsQuery.isError ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  불러오는 중...
+                <td colSpan={6} className="px-0 py-0">
+                  <ErrorState
+                    error={requestsQuery.error}
+                    onRetry={() => void requestsQuery.refetch()}
+                    isRetrying={requestsQuery.isFetching}
+                  />
                 </td>
               </tr>
             ) : (data?.data.length ?? 0) === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  조건에 맞는 신청이 없습니다.
+                <td colSpan={6} className="px-0 py-0">
+                  <EmptyState
+                    icon={FileClock}
+                    title={
+                      filters.status === undefined
+                        ? '아직 예외 신청 내역이 없습니다'
+                        : '조건에 맞는 신청이 없습니다'
+                    }
+                    description={
+                      filters.status === undefined
+                        ? '4시간 이상의 예약이나 시간 충돌은 관리자 승인이 필요합니다. 캘린더에서 예약 시 안내됩니다.'
+                        : '다른 상태 필터를 선택해 보세요.'
+                    }
+                  />
                 </td>
               </tr>
             ) : (
