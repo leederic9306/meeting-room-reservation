@@ -19,8 +19,9 @@ export function middleware(request: NextRequest): NextResponse {
   return NextResponse.redirect(redirect);
 }
 
-// (main) 라우트 그룹에 속하는 실제 URL만 보호한다.
+// (main) / (admin) 라우트 그룹에 속하는 실제 URL만 보호한다.
 // 라우트 그룹 폴더명은 URL에 반영되지 않으므로 실제 경로로 명시.
+// /admin/*의 ADMIN 역할 검증은 클라이언트 AdminGuard와 백엔드 RolesGuard가 책임진다.
 export const config = {
-  matcher: ['/dashboard/:path*', '/my/:path*'],
+  matcher: ['/dashboard/:path*', '/my/:path*', '/admin/:path*'],
 };
