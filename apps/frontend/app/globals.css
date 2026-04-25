@@ -66,3 +66,68 @@
       'calt' 1;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * FullCalendar 커스텀 (Google Calendar 풍 다듬기)
+ *  - 주말 칸/헤더에 옅은 배경 + 글자색 강조
+ *  - 본인 편집 가능한 이벤트는 hover 시 시각 신호 (커서/외곽선)
+ * ------------------------------------------------------------------------- */
+@layer components {
+  /* 토요일 — 옅은 파랑 */
+  .fc .fc-day-sat {
+    background-color: hsl(214 100% 98%);
+  }
+  .fc .fc-col-header-cell.fc-day-sat .fc-col-header-cell-cushion {
+    color: hsl(220 80% 45%);
+  }
+
+  /* 일요일 — 옅은 빨강 */
+  .fc .fc-day-sun {
+    background-color: hsl(0 100% 98%);
+  }
+  .fc .fc-col-header-cell.fc-day-sun .fc-col-header-cell-cushion {
+    color: hsl(0 70% 50%);
+  }
+
+  /* 오늘 칸 강조는 FC 기본 .fc-day-today를 그대로 두고 살짝 톤만 보강 */
+  .fc .fc-day-today {
+    background-color: hsl(45 100% 96%) !important;
+  }
+
+  /* 본인이 드래그 가능한 이벤트는 grab 커서로 신호 */
+  .fc .fc-event.fc-event-editable {
+    cursor: grab;
+  }
+  .fc .fc-event.fc-event-editable:active {
+    cursor: grabbing;
+  }
+  /* 타인/과거/회차 이벤트는 클릭만 가능 */
+  .fc .fc-event.fc-event-readonly {
+    cursor: pointer;
+  }
+
+  /* ----- 모바일 터치 타겟 보강 (sm 미만) -----
+   * FullCalendar prev/next/today 버튼이 기본 ~32px라 iOS HIG 44px에 못 미친다.
+   * 모바일에서만 키우고 데스크탑은 기존 컴팩트 톤 유지.
+   */
+  @media (max-width: 639.98px) {
+    .fc .fc-button {
+      min-height: 44px;
+      min-width: 44px;
+      padding-inline: 0.75rem;
+    }
+    /* 모바일에서 헤더 타이틀이 길면 줄어들도록 — prev/next 버튼이 잘리지 않게. */
+    .fc .fc-toolbar-title {
+      font-size: 1rem;
+    }
+    .fc .fc-toolbar.fc-header-toolbar {
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    /* 슬롯 라벨 폭 축소 — 좁은 화면에서 시간 표시 영역이 너무 넓어지는 문제 보정. */
+    .fc .fc-timegrid-slot-label {
+      font-size: 0.7rem;
+    }
+  }
+}
