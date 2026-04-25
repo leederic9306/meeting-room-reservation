@@ -2,9 +2,10 @@
 
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { toast } from 'sonner';
+import { z } from 'zod';
 
 import { FieldError } from '@/components/features/auth/FieldError';
 import { Button } from '@/components/ui/button';
@@ -19,7 +20,19 @@ import {
   type CreateBookingInput,
   type RoomDto,
 } from '@/lib/api/bookings';
+import {
+  createRecurrence,
+  previewRecurrenceStarts,
+  recurrenceInputSchema,
+  recurrenceInputToRRule,
+  RECURRENCE_COUNT_MAX,
+  RECURRENCE_COUNT_MIN,
+  RECURRENCE_PREVIEW_LIMIT,
+  type CreateRecurrenceResultDto,
+  type SkippedInstanceDto,
+} from '@/lib/api/recurrences';
 import { cn } from '@/lib/utils';
+import { formatKstDateTime, formatKstTimeRange } from '@/lib/utils/datetime';
 
 import { DateTimeQuarterPicker } from './DateTimeQuarterPicker';
 
@@ -32,14 +45,12 @@ interface Props {
   defaultRoomId?: string;
 }
 
-/**
- * 도메인 에러 코드 → 사용자 메시지 (충돌 등 명확한 안내).
- * 충돌은 폼 위쪽 배너로 띄워 입력값을 그대로 두고 시간만 다시 고를 수 있게 한다.
- */
 const ERROR_BANNER: Partial<Record<string, string>> = {
   BOOKING_TIME_CONFLICT: '선택한 시간대에 이미 다른 예약이 있습니다. 시간을 변경해 주세요.',
   ROOM_INACTIVE: '비활성 상태의 회의실에는 예약할 수 없습니다.',
   ROOM_NOT_FOUND: '존재하지 않는 회의실입니다.',
+  ALL_INSTANCES_FAILED: '생성 가능한 회차가 없습니다. 시간/주기/종료 조건을 확인해 주세요.',
+  INVALID_RRULE: '반복 규칙이 올바르지 않습니다.',
 };
 
 const ERROR_TOAST: Partial<Record<string, string>> = {
@@ -47,6 +58,16 @@ const ERROR_TOAST: Partial<Record<string, string>> = {
   BOOKING_TIME_PAST: '과거 시점에는 예약할 수 없습니다.',
   BOOKING_DURATION_EXCEEDED: '예약은 최대 4시간까지 가능합니다.',
 };
+
+/**
+ * 단일 예약 폼 + 반복 옵션을 한 폼으로 결합한 스키마.
+ * 반복이 켜진 경우 createBookingSchema의 단일-회차 필드(roomId/title/시간)는 첫 회차로 사용된다.
+ */
+const formSchema = z.object({
+  booking: createBookingSchema,
+  recurrence: recurrenceInputSchema,
+});
+type FormValues = z.infer<typeof formSchema>;
 
 export function CreateBookingModal({
   open,
@@ -56,6 +77,7 @@ export function CreateBookingModal({
   defaultRoomId,
 }: Props): JSX.Element {
   const queryClient = useQueryClient();
+  const [conflictResult, setConflictResult] = useState<CreateRecurrenceResultDto | undefined>();
 
   const roomsQuery = useQuery<RoomDto[]>({
     queryKey: ['rooms'],
@@ -71,31 +93,56 @@ export function CreateBookingModal({
     reset,
     setError,
     clearErrors,
+    watch,
     formState: { errors },
-  } = useForm<CreateBookingInput>({
-    resolver: zodResolver(createBookingSchema),
+  } = useForm<FormValues>({
+    resolver: zodResolver(formSchema),
     defaultValues: {
-      roomId: defaultRoomId ?? '',
-      title: '',
-      description: '',
-      startAt: initialStart.toISOString(),
-      endAt: initialEnd.toISOString(),
+      booking: {
+        roomId: defaultRoomId ?? '',
+        title: '',
+        description: '',
+        startAt: initialStart.toISOString(),
+        endAt: initialEnd.toISOString(),
+      },
+      recurrence: { enabled: false },
     },
   });
 
-  // 모달이 열릴 때마다(또는 슬롯이 바뀔 때) 초기값 동기화.
   useEffect(() => {
     if (!open) return;
     reset({
-      roomId: defaultRoomId ?? '',
-      title: '',
-      description: '',
-      startAt: initialStart.toISOString(),
-      endAt: initialEnd.toISOString(),
+      booking: {
+        roomId: defaultRoomId ?? '',
+        title: '',
+        description: '',
+        startAt: initialStart.toISOString(),
+        endAt: initialEnd.toISOString(),
+      },
+      recurrence: { enabled: false },
     });
+    setConflictResult(undefined);
   }, [open, initialStart, initialEnd, defaultRoomId, reset]);
 
-  const mutation = useMutation({
+  const recurrence = watch('recurrence');
+  const startAtValue = watch('booking.startAt');
+  const endAtValue = watch('booking.endAt');
+
+  // 미리보기 — 첫 회차 시작 + 주기로 처음 N개 추정 (BYDAY 등 미지원, 단순 프리셋 한정).
+  const previewItems = useMemo(() => {
+    if (!recurrence.enabled) return [];
+    const start = startAtValue ? new Date(startAtValue) : undefined;
+    const end = endAtValue ? new Date(endAtValue) : undefined;
+    if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return [];
+    const durationMs = end.getTime() - start.getTime();
+    if (durationMs <= 0) return [];
+    return previewRecurrenceStarts(recurrence, start, RECURRENCE_PREVIEW_LIMIT).map((s) => ({
+      startIso: s.toISOString(),
+      endIso: new Date(s.getTime() + durationMs).toISOString(),
+    }));
+  }, [recurrence, startAtValue, endAtValue]);
+
+  const singleMutation = useMutation({
     mutationFn: createBooking,
     onSuccess: () => {
       toast.success('예약이 생성되었습니다.');
@@ -103,129 +150,364 @@ export function CreateBookingModal({
       onClose();
     },
     onError: (error: ApiError) => {
-      // 충돌은 폼에 인라인 배너로, 그 외는 토스트로 — 사용자가 입력값을 잃지 않게.
-      if (ERROR_BANNER[error.code] !== undefined) {
-        setError('root.serverError', {
-          type: 'server',
-          message: ERROR_BANNER[error.code],
-        });
-        return;
-      }
-      toast.error(ERROR_TOAST[error.code] ?? error.userMessage);
+      handleApiError(error);
     },
   });
 
+  const recurrenceMutation = useMutation({
+    mutationFn: createRecurrence,
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['bookings'] });
+      if (result.skippedBookings.length > 0) {
+        // 일부 회차 충돌 — 결과 모달로 안내, 본 모달은 그대로 두지 않고 닫음.
+        setConflictResult(result);
+      } else {
+        toast.success(`반복 예약 ${result.createdBookings}회차가 생성되었습니다.`);
+        onClose();
+      }
+    },
+    onError: (error: ApiError) => {
+      handleApiError(error);
+    },
+  });
+
+  function handleApiError(error: ApiError): void {
+    if (ERROR_BANNER[error.code] !== undefined) {
+      setError('root.serverError', { type: 'server', message: ERROR_BANNER[error.code] });
+      return;
+    }
+    toast.error(ERROR_TOAST[error.code] ?? error.userMessage);
+  }
+
   const onSubmit = handleSubmit((values) => {
     clearErrors('root.serverError');
-    mutation.mutate(values);
+    if (!values.recurrence.enabled) {
+      const payload: CreateBookingInput = {
+        ...values.booking,
+        description: values.booking.description || undefined,
+      };
+      singleMutation.mutate(payload);
+      return;
+    }
+    const rrule = recurrenceInputToRRule(values.recurrence);
+    if (!rrule) {
+      setError('root.serverError', {
+        type: 'server',
+        message: '반복 규칙이 올바르지 않습니다. 주기와 종료 조건을 확인해 주세요.',
+      });
+      return;
+    }
+    const start = new Date(values.booking.startAt);
+    const end = new Date(values.booking.endAt);
+    const durationMinutes = Math.round((end.getTime() - start.getTime()) / 60_000);
+    recurrenceMutation.mutate({
+      roomId: values.booking.roomId,
+      title: values.booking.title,
+      description: values.booking.description || undefined,
+      startAt: values.booking.startAt,
+      durationMinutes,
+      rrule,
+    });
   });
 
   const activeRooms = (roomsQuery.data ?? []).filter((r) => r.isActive);
   const serverError = errors.root?.serverError?.message;
+  const isPending = singleMutation.isPending || recurrenceMutation.isPending;
 
   return (
-    <Modal open={open} onClose={onClose} title="새 예약" description="시간을 확인하고 예약하세요.">
-      <form onSubmit={onSubmit} className="space-y-4" noValidate>
-        {serverError ? (
-          <div
-            role="alert"
-            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-          >
-            {serverError}
+    <>
+      <Modal
+        open={open && conflictResult === undefined}
+        onClose={onClose}
+        title="새 예약"
+        description="시간을 확인하고 예약하세요."
+      >
+        <form onSubmit={onSubmit} className="space-y-4" noValidate>
+          {serverError ? (
+            <div
+              role="alert"
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
+              {serverError}
+            </div>
+          ) : null}
+
+          <div>
+            <Label htmlFor="booking-room">회의실</Label>
+            <select
+              id="booking-room"
+              aria-invalid={Boolean(errors.booking?.roomId)}
+              disabled={roomsQuery.isLoading || activeRooms.length === 0}
+              className={cn(
+                'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                errors.booking?.roomId && 'border-destructive',
+              )}
+              {...register('booking.roomId')}
+            >
+              <option value="">회의실 선택</option>
+              {activeRooms.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                  {r.location ? ` · ${r.location}` : ''}
+                </option>
+              ))}
+            </select>
+            <FieldError message={errors.booking?.roomId?.message} />
           </div>
-        ) : null}
 
-        <div>
-          <Label htmlFor="booking-room">회의실</Label>
-          <select
-            id="booking-room"
-            aria-invalid={Boolean(errors.roomId)}
-            disabled={roomsQuery.isLoading || activeRooms.length === 0}
-            className={cn(
-              'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              errors.roomId && 'border-destructive',
-            )}
-            {...register('roomId')}
-          >
-            <option value="">회의실 선택</option>
-            {activeRooms.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name}
-                {r.location ? ` · ${r.location}` : ''}
-              </option>
-            ))}
-          </select>
-          <FieldError message={errors.roomId?.message} />
-        </div>
+          <div>
+            <Label htmlFor="booking-title">제목</Label>
+            <Input
+              id="booking-title"
+              placeholder="예: 스프린트 리뷰"
+              maxLength={200}
+              aria-invalid={Boolean(errors.booking?.title)}
+              className={cn(errors.booking?.title && 'border-destructive')}
+              {...register('booking.title')}
+            />
+            <FieldError message={errors.booking?.title?.message} />
+          </div>
 
-        <div>
-          <Label htmlFor="booking-title">제목</Label>
-          <Input
-            id="booking-title"
-            placeholder="예: 스프린트 리뷰"
-            maxLength={200}
-            aria-invalid={Boolean(errors.title)}
-            className={cn(errors.title && 'border-destructive')}
-            {...register('title')}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Controller
+              name="booking.startAt"
+              control={control}
+              render={({ field, fieldState }) => (
+                <DateTimeQuarterPicker
+                  id="booking-start"
+                  label="시작"
+                  value={field.value}
+                  onChange={field.onChange}
+                  error={fieldState.error?.message}
+                  required
+                />
+              )}
+            />
+            <Controller
+              name="booking.endAt"
+              control={control}
+              render={({ field, fieldState }) => (
+                <DateTimeQuarterPicker
+                  id="booking-end"
+                  label="종료"
+                  value={field.value}
+                  onChange={field.onChange}
+                  error={fieldState.error?.message}
+                  required
+                />
+              )}
+            />
+          </div>
+
+          <div>
+            <Label htmlFor="booking-description">설명 (선택)</Label>
+            <textarea
+              id="booking-description"
+              className={cn(
+                'flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                errors.booking?.description && 'border-destructive',
+              )}
+              maxLength={2000}
+              aria-invalid={Boolean(errors.booking?.description)}
+              {...register('booking.description')}
+            />
+            <FieldError message={errors.booking?.description?.message} />
+          </div>
+
+          <RecurrenceSection
+            errors={errors}
+            register={register}
+            previewItems={previewItems}
+            recurrenceEnabled={recurrence.enabled}
+            recurrenceEndType={recurrence.endType}
           />
-          <FieldError message={errors.title?.message} />
-        </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Controller
-            name="startAt"
-            control={control}
-            render={({ field, fieldState }) => (
-              <DateTimeQuarterPicker
-                id="booking-start"
-                label="시작"
-                value={field.value}
-                onChange={field.onChange}
-                error={fieldState.error?.message}
-                required
-              />
-            )}
-          />
-          <Controller
-            name="endAt"
-            control={control}
-            render={({ field, fieldState }) => (
-              <DateTimeQuarterPicker
-                id="booking-end"
-                label="종료"
-                value={field.value}
-                onChange={field.onChange}
-                error={fieldState.error?.message}
-                required
-              />
-            )}
-          />
-        </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" onClick={onClose} disabled={isPending}>
+              취소
+            </Button>
+            <Button type="submit" disabled={isPending || activeRooms.length === 0}>
+              {isPending ? '저장 중...' : recurrence.enabled ? '반복 예약하기' : '예약하기'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
-        <div>
-          <Label htmlFor="booking-description">설명 (선택)</Label>
-          <textarea
-            id="booking-description"
-            className={cn(
-              'flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              errors.description && 'border-destructive',
-            )}
-            maxLength={2000}
-            aria-invalid={Boolean(errors.description)}
-            {...register('description')}
-          />
-          <FieldError message={errors.description?.message} />
-        </div>
+      {conflictResult ? (
+        <ConflictResultModal
+          result={conflictResult}
+          onClose={() => {
+            setConflictResult(undefined);
+            onClose();
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
 
-        <div className="flex justify-end gap-2 pt-2">
-          <Button type="button" variant="outline" onClick={onClose} disabled={mutation.isPending}>
-            취소
+interface RecurrenceSectionProps {
+  errors: Record<string, unknown>;
+  register: ReturnType<typeof useForm<FormValues>>['register'];
+  previewItems: ReadonlyArray<{ startIso: string; endIso: string }>;
+  recurrenceEnabled: boolean;
+  recurrenceEndType: FormValues['recurrence']['endType'];
+}
+
+function RecurrenceSection({
+  errors,
+  register,
+  previewItems,
+  recurrenceEnabled,
+  recurrenceEndType,
+}: RecurrenceSectionProps): JSX.Element {
+  const formErrors = errors as {
+    recurrence?: {
+      freq?: { message?: string };
+      endType?: { message?: string };
+      count?: { message?: string };
+      until?: { message?: string };
+    };
+  };
+  const recurrenceErrors = formErrors.recurrence;
+
+  return (
+    <fieldset className="rounded-md border border-input p-3">
+      <label className="flex items-center gap-2 text-sm font-medium">
+        <input type="checkbox" className="h-4 w-4" {...register('recurrence.enabled')} />
+        반복 예약
+      </label>
+
+      {recurrenceEnabled ? (
+        <div className="mt-3 space-y-3">
+          <div>
+            <Label htmlFor="recurrence-freq">주기</Label>
+            <select
+              id="recurrence-freq"
+              aria-invalid={Boolean(recurrenceErrors?.freq?.message)}
+              className={cn(
+                'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                recurrenceErrors?.freq?.message && 'border-destructive',
+              )}
+              {...register('recurrence.freq')}
+            >
+              <option value="">주기 선택</option>
+              <option value="DAILY">매일</option>
+              <option value="WEEKLY">매주</option>
+              <option value="MONTHLY">매월</option>
+            </select>
+            <FieldError message={recurrenceErrors?.freq?.message} />
+          </div>
+
+          <div>
+            <Label>종료 조건</Label>
+            <div className="mt-1 space-y-2 text-sm">
+              <label className="flex items-center gap-2">
+                <input type="radio" value="count" {...register('recurrence.endType')} />
+                횟수
+                <input
+                  type="number"
+                  min={RECURRENCE_COUNT_MIN}
+                  max={RECURRENCE_COUNT_MAX}
+                  disabled={recurrenceEndType !== 'count'}
+                  aria-invalid={Boolean(recurrenceErrors?.count?.message)}
+                  className={cn(
+                    'h-9 w-24 rounded-md border border-input bg-background px-2 disabled:opacity-50',
+                    recurrenceErrors?.count?.message && 'border-destructive',
+                  )}
+                  {...register('recurrence.count', { valueAsNumber: true })}
+                />
+                <span className="text-muted-foreground">회</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="radio" value="until" {...register('recurrence.endType')} />
+                종료일
+                <input
+                  type="date"
+                  disabled={recurrenceEndType !== 'until'}
+                  aria-invalid={Boolean(recurrenceErrors?.until?.message)}
+                  className={cn(
+                    'h-9 rounded-md border border-input bg-background px-2 disabled:opacity-50',
+                    recurrenceErrors?.until?.message && 'border-destructive',
+                  )}
+                  {...register('recurrence.until')}
+                />
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="radio" value="forever" {...register('recurrence.endType')} />
+                무기한
+                <span className="text-xs text-muted-foreground">(서버에서 1년으로 자동 절단)</span>
+              </label>
+            </div>
+            <FieldError message={recurrenceErrors?.endType?.message} />
+            <FieldError message={recurrenceErrors?.count?.message} />
+            <FieldError message={recurrenceErrors?.until?.message} />
+          </div>
+
+          <div>
+            <Label>미리보기 (처음 {RECURRENCE_PREVIEW_LIMIT}개)</Label>
+            {previewItems.length === 0 ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                주기와 시작 시간을 선택하면 회차가 표시됩니다.
+              </p>
+            ) : (
+              <ol className="mt-1 space-y-1 text-xs text-muted-foreground">
+                {previewItems.map((item, idx) => (
+                  <li key={item.startIso}>
+                    {idx + 1}. {formatKstDateTime(item.startIso)} (
+                    {formatKstTimeRange(item.startIso, item.endIso)})
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </fieldset>
+  );
+}
+
+interface ConflictResultModalProps {
+  result: CreateRecurrenceResultDto;
+  onClose: () => void;
+}
+
+function ConflictResultModal({ result, onClose }: ConflictResultModalProps): JSX.Element {
+  const skipped = result.skippedBookings;
+  const conflictCount = skipped.filter((s) => s.reason === 'TIME_CONFLICT').length;
+  const pastCount = skipped.filter((s) => s.reason === 'PAST_INSTANCE').length;
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="반복 예약 생성 결과"
+      description={`${result.createdBookings}회차 생성 · ${skipped.length}회차 제외`}
+    >
+      <div className="space-y-3 text-sm">
+        <p>
+          일부 회차는 다음 사유로 생성되지 않았습니다.
+          {conflictCount > 0 ? ` 충돌 ${conflictCount}건` : ''}
+          {pastCount > 0 ? `${conflictCount > 0 ? ', ' : ' '}과거 회차 ${pastCount}건` : ''}.
+        </p>
+        <ul className="max-h-60 overflow-y-auto rounded-md border bg-muted/30 p-3 text-xs">
+          {skipped.map((s) => (
+            <li key={`${s.index}-${s.startAt}`} className="flex justify-between gap-2 py-0.5">
+              <span>{labelForSkipReason(s)}</span>
+              <span className="text-muted-foreground">{formatKstDateTime(s.startAt)}</span>
+            </li>
+          ))}
+        </ul>
+        <div className="flex justify-end pt-2">
+          <Button type="button" onClick={onClose}>
+            확인
           </Button>
-          <Button type="submit" disabled={mutation.isPending || activeRooms.length === 0}>
-            {mutation.isPending ? '저장 중...' : '예약하기'}
-          </Button>
         </div>
-      </form>
+      </div>
     </Modal>
   );
+}
+
+function labelForSkipReason(s: SkippedInstanceDto): string {
+  return s.reason === 'TIME_CONFLICT' ? '시간 충돌' : '과거 시점';
 }

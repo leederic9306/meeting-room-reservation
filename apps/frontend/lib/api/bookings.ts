@@ -110,8 +110,16 @@ export async function updateBooking(id: string, values: UpdateBookingInput): Pro
   return unwrap(res.data);
 }
 
-export async function deleteBooking(id: string): Promise<void> {
-  await api.delete(`/bookings/${id}`);
+/**
+ * 반복 회차 삭제 범위. 단일 예약은 scope 무관 — 백엔드가 무시.
+ * - instance: 해당 회차만 삭제 + RecurrenceException 추가 (기본)
+ * - following: 이 회차부터 미래 모든 회차 삭제 + 시리즈 untilAt 단축
+ * - series: 시리즈 전체 + 미래 회차 삭제
+ */
+export type DeleteBookingScope = 'instance' | 'following' | 'series';
+
+export async function deleteBooking(id: string, scope?: DeleteBookingScope): Promise<void> {
+  await api.delete(`/bookings/${id}`, scope !== undefined ? { params: { scope } } : undefined);
 }
 
 export async function listRooms(): Promise<RoomDto[]> {
