@@ -82,6 +82,7 @@ describe('BookingService', () => {
       update: jest.Mock;
     };
     room: { findUnique: jest.Mock };
+    $queryRaw: jest.Mock;
   };
 
   beforeAll(() => {
@@ -102,6 +103,7 @@ describe('BookingService', () => {
         update: jest.fn(),
       },
       room: { findUnique: jest.fn() },
+      $queryRaw: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -560,6 +562,111 @@ describe('BookingService', () => {
 
       const result = await service.findById(BOOKING_ID, userActor);
       expect(result.isMine).toBe(false);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // findConflictingInstanceIndices — 회차 일괄 충돌 검사 (반복 예약용)
+  // ---------------------------------------------------------------------------
+
+  describe('findConflictingInstanceIndices', () => {
+    /** 09:00 KST 기준으로 i주차 월요일 1시간짜리 인스턴스를 만든다. */
+    const weeklyInstance = (weekIdx: number): { startAt: Date; endAt: Date } => {
+      const start = new Date(FUTURE_START.getTime() + weekIdx * 7 * 24 * 60 * 60 * 1000);
+      const end = new Date(start.getTime() + 60 * 60 * 1000);
+      return { startAt: start, endAt: end };
+    };
+
+    it('빈 인스턴스 배열이면 DB 조회 없이 빈 배열 반환', async () => {
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, []);
+      expect(result).toEqual([]);
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('단일 인스턴스 — 충돌 없음 → []', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, [weeklyInstance(0)]);
+      expect(result).toEqual([]);
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it('단일 인스턴스 — 충돌 발생 → [0]', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ idx: 0 }]);
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, [weeklyInstance(0)]);
+      expect(result).toEqual([0]);
+    });
+
+    it('12개 회차 중 일부(0,5,11)만 충돌 → 해당 인덱스만 반환', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ idx: 0 }, { idx: 5 }, { idx: 11 }]);
+      const instances = Array.from({ length: 12 }, (_, i) => weeklyInstance(i));
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, instances);
+      expect(result).toEqual([0, 5, 11]);
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it('전 회차 충돌 → 모든 인덱스 반환', async () => {
+      const instances = Array.from({ length: 4 }, (_, i) => weeklyInstance(i));
+      prisma.$queryRaw.mockResolvedValue(instances.map((_, i) => ({ idx: i })));
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, instances);
+      expect(result).toEqual([0, 1, 2, 3]);
+    });
+
+    it('모든 회차 안전 → 빈 배열', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      const instances = Array.from({ length: 6 }, (_, i) => weeklyInstance(i));
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, instances);
+      expect(result).toEqual([]);
+    });
+
+    it('PostgreSQL이 BigInt로 반환해도 number로 정규화', async () => {
+      // 일부 드라이버 설정에서 int4가 BigInt로 도착하는 경우 방어.
+      prisma.$queryRaw.mockResolvedValue([{ idx: BigInt(2) }, { idx: BigInt(7) }]);
+      const instances = Array.from({ length: 8 }, (_, i) => weeklyInstance(i));
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, instances);
+      expect(result).toEqual([2, 7]);
+      // 반환 타입이 정확히 number인지 확인.
+      result.forEach((v) => expect(typeof v).toBe('number'));
+    });
+
+    it('SQL 단계에서 DISTINCT로 중복 제거되지만, 만약 같은 idx가 두 번 와도 호출자에게는 그대로 노출(레이어 책임 분리)', async () => {
+      // SQL 레벨에서 DISTINCT 보장하므로 보통 발생 X.
+      // 그러나 함수가 추가 dedup을 시도하지 않음을 명시(YAGNI).
+      prisma.$queryRaw.mockResolvedValue([{ idx: 1 }, { idx: 1 }, { idx: 3 }]);
+      const instances = Array.from({ length: 5 }, (_, i) => weeklyInstance(i));
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, instances);
+      expect(result).toEqual([1, 1, 3]);
+    });
+
+    it('단일 쿼리만 실행 — N+1 회피 검증', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      const instances = Array.from({ length: 50 }, (_, i) => weeklyInstance(i));
+      await service.findConflictingInstanceIndices(ROOM_ID, instances);
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it('호출 시 SQL 객체에 입력 인스턴스 수 만큼의 VALUES 행이 포함됨', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      const instances = Array.from({ length: 3 }, (_, i) => weeklyInstance(i));
+      await service.findConflictingInstanceIndices(ROOM_ID, instances);
+
+      // Prisma.sql은 { strings, values } 형태의 Sql 객체로 평가됨.
+      const sqlArg = prisma.$queryRaw.mock.calls[0]?.[0] as {
+        values: unknown[];
+      };
+      // 파라미터는: roomId(1) + 인스턴스마다 startAt+endAt(2) = 1 + 3*2 = 7
+      expect(Array.isArray(sqlArg.values)).toBe(true);
+      expect(sqlArg.values).toContain(ROOM_ID);
+      expect(sqlArg.values).toEqual(
+        expect.arrayContaining([instances[0]!.startAt, instances[2]!.endAt]),
+      );
+    });
+
+    it('다른 roomId로 호출하면 해당 roomId가 SQL 파라미터로 전달됨', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      await service.findConflictingInstanceIndices(OTHER_ROOM_ID, [weeklyInstance(0)]);
+      const sqlArg = prisma.$queryRaw.mock.calls[0]?.[0] as { values: unknown[] };
+      expect(sqlArg.values).toContain(OTHER_ROOM_ID);
+      expect(sqlArg.values).not.toContain(ROOM_ID);
     });
   });
 });

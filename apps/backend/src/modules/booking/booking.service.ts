@@ -227,6 +227,52 @@ export class BookingService {
   }
 
   // ---------------------------------------------------------------------------
+  // 회차 인스턴스 일괄 충돌 검사 (반복 예약 시리즈용)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 동일 회의실의 기존 예약과 시간이 겹치는 회차 인스턴스의 인덱스를 반환한다.
+   *
+   * 단일 SQL 쿼리(VALUES + tstzrange `&&`) 로 모든 인스턴스를 한 번에 비교하므로
+   * 회차 수 N에 대해 N+1 쿼리가 발생하지 않는다. EXCLUDE 제약과 동일한
+   * `tstzrange(..., '[)')` 반열림 구간을 사용해 9-10시 / 10-11시 같은 인접 예약은
+   * 충돌로 판정하지 않는다.
+   *
+   * 입력 인스턴스 간의 자체 겹침은 검사하지 않는다(rrule 펼침 결과는 정의상
+   * 서로 겹치지 않음). 호출자(reucrrence service) 가 RRULE 검증을 선행하는 것을 전제.
+   *
+   * @returns 충돌이 발생한 인스턴스의 인덱스(0-base) 오름차순 배열
+   */
+  async findConflictingInstanceIndices(
+    roomId: string,
+    instances: ReadonlyArray<{ startAt: Date; endAt: Date }>,
+  ): Promise<number[]> {
+    if (instances.length === 0) return [];
+
+    const valuesRows = instances.map(
+      (inst, idx) =>
+        Prisma.sql`(${idx}::int, tstzrange(${inst.startAt}::timestamptz, ${inst.endAt}::timestamptz, '[)'))`,
+    );
+
+    const rows = await this.prisma.$queryRaw<Array<{ idx: number | bigint }>>(
+      Prisma.sql`
+        WITH instances(idx, rng) AS (
+          VALUES ${Prisma.join(valuesRows)}
+        )
+        SELECT DISTINCT i.idx
+        FROM instances i
+        JOIN booking b
+          ON b.room_id = ${roomId}::uuid
+         AND b.deleted_at IS NULL
+         AND tstzrange(b.start_at, b.end_at, '[)') && i.rng
+        ORDER BY i.idx ASC
+      `,
+    );
+
+    return rows.map((r) => Number(r.idx));
+  }
+
+  // ---------------------------------------------------------------------------
   // 검증 헬퍼
   // ---------------------------------------------------------------------------
 

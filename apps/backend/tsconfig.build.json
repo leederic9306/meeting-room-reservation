@@ -6,6 +6,7 @@
     "coverage",
     "test",
     "prisma",
+    "scripts",
     "src/**/*.spec.ts",
     "src/**/*.e2e-spec.ts"
   ]
