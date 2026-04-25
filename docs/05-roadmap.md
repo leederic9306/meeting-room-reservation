@@ -1,6 +1,7 @@
 # 개발 로드맵 — 사내 회의실 예약 시스템
 
 > **문서 정보**
+>
 > - 버전: 1.0
 > - 작성일: 2026-04-23
 > - 총 예상 기간: 7~8주
@@ -49,6 +50,7 @@ Conventional Commits + 한글 메시지:
 ```
 
 타입:
+
 - `feat`: 신규 기능
 - `fix`: 버그 수정
 - `refactor`: 리팩토링
@@ -59,6 +61,7 @@ Conventional Commits + 한글 메시지:
 - `perf`: 성능 개선
 
 예시:
+
 ```
 feat(auth): 이메일 인증 코드 발송 기능 추가
 fix(booking): 시간 겹침 검증 시 소프트 삭제 행 제외
@@ -75,6 +78,7 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 ### 0.1 모노레포 초기화
 
 작업:
+
 - pnpm workspace 설정
 - Turborepo 도입
 - 루트 `package.json`, `pnpm-workspace.yaml`, `turbo.json`
@@ -88,6 +92,7 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 ### 0.2 백엔드 스캐폴딩
 
 작업:
+
 - NestJS 10 프로젝트 생성
 - TypeScript strict 모드
 - Prisma 5.x 설치
@@ -105,6 +110,7 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 ### 0.3 프런트엔드 스캐폴딩
 
 작업:
+
 - Next.js 14 (App Router) + TypeScript
 - Tailwind CSS
 - shadcn/ui 초기화
@@ -123,6 +129,7 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 ### 0.4 공유 패키지
 
 작업:
+
 - `packages/shared-types`: 백/프런트 공유 zod 스키마
 - `packages/config`: ESLint/TS 베이스 설정
 
@@ -136,6 +143,7 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 ### 0.5 Prisma 초기 스키마 적용
 
 작업:
+
 - 작성해둔 `prisma/schema.prisma`를 백엔드에 배치
 - `_extra_constraints.sql` 별도 마이그레이션으로 추가
 
@@ -151,6 +159,7 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 ### 0.6 개발 도구 (ESLint, Prettier, Husky)
 
 작업:
+
 - 루트 ESLint, Prettier 설정
 - Husky pre-commit hook (lint-staged)
 - editorconfig
@@ -164,6 +173,7 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 ### 0.7 GitHub Actions CI
 
 작업:
+
 - PR 시 lint, typecheck, test, build 실행
 - pnpm 캐시 + Turborepo remote cache (선택)
 
@@ -202,6 +212,7 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 ### 1.2 회원가입 + 이메일 인증
 
 작업:
+
 - `POST /auth/signup`
 - `POST /auth/verify-email`
 - `POST /auth/resend-code`
@@ -232,6 +243,7 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 ### 1.4 로그인 + Dual JWT
 
 작업:
+
 - `POST /auth/login` — Access + Refresh 발급
 - `POST /auth/refresh` — Refresh로 새 Access 발급 + Refresh rotation
 - `POST /auth/logout` — Refresh 무효화
@@ -531,24 +543,45 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 
 **목표**: RRULE 기반 반복 예약 + 예외 일자 제외.
 
+### Phase 3.5 PoC 결과 적용 (필독)
+
+본 Phase는 Phase 3.5 PoC에서 검증·결정된 다음 사항을 그대로 따른다. 위반 시 회귀 발생.
+
+| 항목                                      | 결정/제약                                                                                               | 출처                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| dtstart 생성                              | `fromZonedTime(wall, 'Asia/Seoul')`로 UTC Date 직접 구성                                                | `06-rrule-poc-result.md` D-2/D-3  |
+| rrule.js `tzid` 옵션 / `DTSTART;TZID=...` | **사용 금지** (시스템 TZ에 따라 결과 흔들림)                                                            | D-2                               |
+| 1년 절단                                  | `rrule.between(dtstart, dtstart + 1y, true)` 사용                                                       | D-3                               |
+| 표시용 변환                               | `formatInTimeZone(d, 'Asia/Seoul', ...)` (DTO 응답 시점)                                                | D-3                               |
+| 충돌 검출                                 | EXCLUDE 위반(`SQLSTATE 23P01`) catch → `BOOKING_TIME_CONFLICT`. 사전 SELECT 검증 SQL 불필요 (race-safe) | `05-roadmap.md` 부록 A Case 1·2·5 |
+| EXDATE 후 같은 슬롯 재예약                | 가능 (소프트 삭제 + `WHERE deleted_at IS NULL` 부분 제약)                                               | 부록 A Case 4                     |
+| 회차 저장 전략                            | Method A (booking 미리 펼침) 유지                                                                       | `02-db-design.md` 부록 A          |
+| BYMONTHDAY 미존재일                       | rrule.js는 자동 보정 안 함 → 사용자 입력 단계에서 "매월 마지막 X요일"은 `BYDAY=-1XX` 형태로 유도        | rrule PoC §3                      |
+| 시리즈 수정 응답시간 임계                 | 365 회차 UPDATE 약 20ms (현 측정). 500ms 초과 시 비동기/부분 재계산 검토                                | 02-db-design 부록 A.2.3           |
+
 ### 4.1 Recurrence 모듈
 
 ```
 ▶ src/modules/recurrence 모듈을 만들어.
-  - rrule.js 라이브러리 사용
+  - rrule.js 라이브러리 사용 (tzid 옵션 금지 — D-2)
+  - dtstart는 controller DTO 경계에서 fromZonedTime으로 UTC Date 변환 후 service에 전달
   - POST /recurrences: 시리즈 생성 + 회차들을 Booking에 펼쳐 저장
-    - 1년 초과 자동 절단
+    - 1년 초과는 rrule.between(dtstart, dtstart+1y, true)로 절단
     - 과거 회차 skip
-    - 충돌 회차도 skip하되 응답에 명시
+    - 충돌은 사전 검증 없이 INSERT 시도 → SQLSTATE 23P01 catch하여 충돌 회차 인덱스 누적,
+      그 외 회차는 정상 INSERT (race-safe, EXCLUDE 제약이 진실의 원천)
   - GET /recurrences/:id: 시리즈 + 인스턴스 + 예외 조회
   - PATCH /recurrences/:id: title, description만 수정
   - DELETE /recurrences/:id?from=...: 전체 또는 특정 시점부터 삭제
-  - POST /recurrences/:id/exceptions: EXDATE 추가 (해당 Booking 자동 소프트 삭제)
+  - POST /recurrences/:id/exceptions: EXDATE 추가
+    - 해당 Booking 자동 소프트 삭제 (deleted_at SET)
+    - 같은 슬롯 재예약 즉시 가능 (부분 인덱스 동작 검증됨)
 
   단위 테스트:
-  - RRULE 펼침 함수
-  - 충돌 검출 로직
-  - 1년 절단
+  - RRULE 펼침 함수 (시나리오 4종 from PoC + 추가 케이스)
+  - SQLSTATE 23P01 catch → BOOKING_TIME_CONFLICT 변환
+  - 1년 절단 경계
+  - EXDATE 매칭이 UTC instant 단위로 동작
 ```
 
 ### 4.2 Booking 삭제 시 scope 처리
@@ -590,11 +623,16 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 
 ### 4.6 Phase 4 완료 체크
 
-- [ ] 매주 12회 반복 예약 정상 등록
+- [ ] 매주 12회 반복 예약 정상 등록 (PoC 패턴 1)
+- [ ] 격주 화/목 6개월 반복 정상 등록 (PoC 패턴 2)
+- [ ] 매월 마지막 금요일 / 첫째 주 월요일 반복 정상 등록 (PoC 패턴 3·4)
 - [ ] EXDATE 추가 시 캘린더에서 해당 회차 사라짐
-- [ ] 충돌 회차는 자동 skip 후 안내
+- [ ] EXDATE 추가된 슬롯에 새 단일 예약 가능
+- [ ] 충돌 회차는 자동 skip 후 안내 (애플리케이션 사전 검증 없이 23P01 catch)
 - [ ] "이 회차만" 수정 시 시리즈에서 분리
-- [ ] 1년 초과 시 자동 절단
+- [ ] 1년 초과 시 `between` 절단으로 처리
+- [ ] `grep -r "tzid" src/` 결과 0건 (D-2 회귀 방지)
+- [ ] 시리즈 수정 응답시간 < 500ms (벤치마크 임계, 02-db-design 부록 A.2.3)
 - [ ] CI 그린, 태그: `phase-4-complete`
 
 ---
@@ -846,17 +884,17 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 
 ## 마일스톤 요약
 
-| Phase | 목표 | 기간 | 누적 | 산출물 |
-|---|---|---|---|---|
-| 0 | 스캐폴딩 | 3일 | 3일 | 모노레포 + DB + CI |
-| 1 | 인증 | 1주 | 1주 3일 | 가입/로그인/이메일 인증 |
-| 2 | 예약 CRUD | 1.5주 | 3주 | 단일 예약 + 캘린더 |
-| 3 | 다중 회의실/권한 | 3일 | 3주 3일 | 관리자 페이지 |
-| 3.5 | RRULE PoC | 2~3일 | 4주 1일 | 시간대/충돌 검증 결과 문서 |
-| 4 | 반복 예약 | 1.5주 | 5주 3일 | RRULE + EXDATE |
-| 5 | 예외 승인 | 1주 | 6주 3일 | 워크플로우 |
-| 6 | 폴리싱 | 1주 | 7주 3일 | 모바일/테마 |
-| 7 | 마무리 | 1주 | 8주 3일 | 테스트/문서/배포 준비 |
+| Phase | 목표             | 기간  | 누적    | 산출물                     |
+| ----- | ---------------- | ----- | ------- | -------------------------- |
+| 0     | 스캐폴딩         | 3일   | 3일     | 모노레포 + DB + CI         |
+| 1     | 인증             | 1주   | 1주 3일 | 가입/로그인/이메일 인증    |
+| 2     | 예약 CRUD        | 1.5주 | 3주     | 단일 예약 + 캘린더         |
+| 3     | 다중 회의실/권한 | 3일   | 3주 3일 | 관리자 페이지              |
+| 3.5   | RRULE PoC        | 2~3일 | 4주 1일 | 시간대/충돌 검증 결과 문서 |
+| 4     | 반복 예약        | 1.5주 | 5주 3일 | RRULE + EXDATE             |
+| 5     | 예외 승인        | 1주   | 6주 3일 | 워크플로우                 |
+| 6     | 폴리싱           | 1주   | 7주 3일 | 모바일/테마                |
+| 7     | 마무리           | 1주   | 8주 3일 | 테스트/문서/배포 준비      |
 
 총 예상 기간: **약 8~9주** (PoC 단계 추가로 0.5주 증가)
 
@@ -864,18 +902,108 @@ test(recurrence): RRULE 펼침 단위 테스트 추가
 
 ## 의존성 / 위험 요소
 
-| 위험 | 대응 |
-|---|---|
-| RRULE 처리 복잡도 | rrule.js 라이브러리에 의존, **Phase 3.5에서 별도 PoC 진행** 후 결과를 Phase 4 구현에 반영 |
-| 시간대 버그 | DB는 모두 UTC, 표시만 Asia/Seoul. Phase 2부터 테스트 케이스에 시간대 포함 |
-| EXCLUDE 제약 + 소프트 삭제 상호작용 | Phase 2 단위 테스트에 race condition 케이스 포함 |
-| 회사 브랜드 색상 미정 | 변수화로 후속 변경 가능하게 설계 (Phase 6) |
-| 알림 채널 (Slack 등) 미정 | 이메일만 우선, 추상화로 후속 추가 가능 |
+| 위험                                | 대응                                                                                      |
+| ----------------------------------- | ----------------------------------------------------------------------------------------- |
+| RRULE 처리 복잡도                   | rrule.js 라이브러리에 의존, **Phase 3.5에서 별도 PoC 진행** 후 결과를 Phase 4 구현에 반영 |
+| 시간대 버그                         | DB는 모두 UTC, 표시만 Asia/Seoul. Phase 2부터 테스트 케이스에 시간대 포함                 |
+| EXCLUDE 제약 + 소프트 삭제 상호작용 | Phase 2 단위 테스트에 race condition 케이스 포함                                          |
+| 회사 브랜드 색상 미정               | 변수화로 후속 변경 가능하게 설계 (Phase 6)                                                |
+| 알림 채널 (Slack 등) 미정           | 이메일만 우선, 추상화로 후속 추가 가능                                                    |
+
+---
+
+## 부록 A. EXCLUDE 제약 동작 검증 (Phase 2)
+
+**일자**: 2026-04-25
+**대상**: `excl_booking_no_overlap` (booking 테이블, EXCLUDE USING gist)
+**환경**: PostgreSQL 16 (docker compose), btree_gist 확장 활성, 기 적용 마이그레이션 `20260423125356_add_constraints`
+**검증 방식**: `docker exec meeting-room-postgres psql ...` 직접 SQL 발행. 케이스 1~4는 단일 세션 BEGIN/ROLLBACK으로 데이터 영속화 없이 검증. 케이스 5는 두 psql 세션 동시 실행.
+
+### 결과 요약
+
+| #   | 케이스                                              | 기대 동작           | 실제 결과                                                                 |
+| --- | --------------------------------------------------- | ------------------- | ------------------------------------------------------------------------- |
+| 1   | 정확히 같은 시간 두 예약 (동일 회의실)              | 두 번째 INSERT 실패 | ✅ `SQLSTATE 23P01` "conflicting key value violates exclusion constraint" |
+| 2   | 1초 겹침 (`9:00:00-10:00:00` vs `9:59:59-11:00:00`) | 두 번째 INSERT 실패 | ✅ `SQLSTATE 23P01` (CHECK 제약 임시 DROP 후 검증)                        |
+| 3   | `9:00-10:00` + `10:00-11:00` (경계 접촉)            | 두 INSERT 모두 성공 | ✅ 2건 INSERT 성공 (`tstzrange '[)'` 종료 미포함)                         |
+| 4   | 소프트 삭제된 예약 + 새 예약 동일 시간              | 두 INSERT 모두 성공 | ✅ active 1 / soft_deleted 1 공존 (`WHERE deleted_at IS NULL` 부분 제약)  |
+| 5   | 동시에 두 트랜잭션이 같은 시간 INSERT               | 한쪽만 성공         | ✅ Session 1 commit, Session 2는 락 대기 후 `23P01`로 자동 ROLLBACK       |
+
+### 주요 출력 발췌
+
+**Case 1** (정확히 같은 시간 두 예약):
+
+```text
+ERROR:  conflicting key value violates exclusion constraint "excl_booking_no_overlap"
+DETAIL:  Key (room_id, tstzrange(start_at, end_at, '[)'::text))
+          =(96493667-..., ["2030-01-01 09:00:00+09","2030-01-01 10:00:00+09"))
+        conflicts with existing key
+          =(96493667-..., ["2030-01-01 09:00:00+09","2030-01-01 10:00:00+09")).
+```
+
+**Case 2** (1초 겹침 — `chk_booking_*_quarter` 제약은 트랜잭션 내 임시 DROP 후 ROLLBACK으로 자동 복원):
+
+```text
+INSERT 0 1                           -- 9:00:00-10:00:00 OK
+ERROR:  conflicting key value violates exclusion constraint "excl_booking_no_overlap"
+DETAIL:  ... ["2030-01-02 09:59:59+09","2030-01-02 11:00:00+09")
+        conflicts with ...["2030-01-02 09:00:00+09","2030-01-02 10:00:00+09")
+```
+
+→ EXCLUDE 제약은 시간 정밀도까지 정확히 검출.
+
+**Case 3** (경계 접촉):
+
+```text
+INSERT 0 1   -- 9:00-10:00 OK
+INSERT 0 1   -- 10:00-11:00 OK (10:00은 첫 행의 종료점, '[)' 미포함)
+ inserted_count
+----------------
+              2
+```
+
+**Case 4** (소프트 삭제 + 새 예약 동일 시간):
+
+```text
+INSERT 0 1   -- deleted_at SET (소프트 삭제 마킹된 행)
+INSERT 0 1   -- 동일 시간대 활성 행
+ active_count | soft_deleted_count
+--------------+--------------------
+            1 |                  1
+```
+
+→ 부분 인덱스 (`WHERE deleted_at IS NULL`)가 정상 동작.
+
+**Case 5** (동시 트랜잭션):
+
+- Session 1: `BEGIN; INSERT (2030-01-05 09:00-10:00); pg_sleep(3); COMMIT;`
+- Session 2 (1초 후 시작): `BEGIN; INSERT (동일 슬롯); COMMIT;` → Session 1의 락에 대기 → Session 1 commit 직후 conflict 감지 → 다음과 같이 자동 ROLLBACK:
+
+```text
+ERROR:  conflicting key value violates exclusion constraint "excl_booking_no_overlap"
+DETAIL:  ... ["2030-01-05 09:00:00+09","2030-01-05 10:00:00+09")
+ROLLBACK
+```
+
+- 최종 DB 상태: Session 1의 row 1건만 존재 (검증 후 cleanup으로 삭제).
+
+### 결론 및 적용 사항
+
+1. **DB 레벨 보호가 race condition까지 차단됨이 확인됨.** 애플리케이션 코드는 동시성 충돌 검증을 별도로 구현할 필요 없이 EXCLUDE 위반(`23P01`)만 잡아 도메인 예외(`BOOKING_TIME_CONFLICT`)로 변환하면 충분.
+2. **`tstzrange` 종료 시점 미포함(`'[)'`) 동작 확정** — Phase 2 booking.service의 시간 비교 로직과 일치. 별도 보정 불필요.
+3. **소프트 삭제 행은 EXCLUDE에서 제외되어** 같은 슬롯 재예약 가능. Phase 2 booking 조회 쿼리는 항상 `deletedAt: null` 필터 유지 필요 (CLAUDE.md §7과 일치).
+4. **15분 단위 CHECK 제약은 EXCLUDE와 직교** — 1초 단위 침범 시도조차 EXCLUDE가 잡지만, 정상 흐름에서는 CHECK가 먼저 거부.
+5. **Phase 4(반복 예약) 시리즈 펼침 시에도 동일 EXCLUDE가 회차 단위로 적용** — 시리즈 내부 충돌, 단일 예약과 시리즈 회차의 충돌 모두 DB 레벨에서 단일 메커니즘으로 차단됨.
+
+### 재현 방법
+
+본 검증은 일회성 스크립트로 수행했으며 별도 파일로 저장하지 않음. 재현 시 docker postgres 기동 + 시드 데이터 1개 user/room이 있는 상태에서 본 부록의 SQL을 직접 발행하면 동일 결과 확인 가능. 케이스 5는 `pg_sleep(3)`으로 Session 1을 보유한 채 Session 2를 1초 후 띄우는 방식.
 
 ---
 
 ## 변경 이력
 
-| 버전 | 일자 | 작성자 | 변경 내용 |
-|---|---|---|---|
-| 1.0 | 2026-04-23 | 데릭 + Claude | 초기 작성 |
+| 버전 | 일자       | 작성자        | 변경 내용                                            |
+| ---- | ---------- | ------------- | ---------------------------------------------------- |
+| 1.0  | 2026-04-23 | 데릭 + Claude | 초기 작성                                            |
+| 1.1  | 2026-04-25 | 데릭 + Claude | 부록 A. EXCLUDE 제약 동작 검증(케이스 1~5) 결과 추가 |

@@ -207,6 +207,22 @@ export function BookingCalendar(): JSX.Element {
             const booking = arg.event.extendedProps.booking as BookingDto | undefined;
             if (booking) setActiveBooking(booking);
           }}
+          eventContent={(arg) => {
+            const booking = arg.event.extendedProps.booking as BookingDto | undefined;
+            const isRecurrence =
+              booking?.recurrenceId !== null && booking?.recurrenceId !== undefined;
+            return (
+              <div className="flex items-center gap-1 overflow-hidden px-1 text-xs">
+                {arg.timeText ? <span className="shrink-0 font-medium">{arg.timeText}</span> : null}
+                {isRecurrence ? (
+                  <span aria-label="반복 예약" title="반복 예약" className="shrink-0">
+                    ↻
+                  </span>
+                ) : null}
+                <span className="truncate">{arg.event.title}</span>
+              </div>
+            );
+          }}
           datesSet={(arg) => {
             // 보이는 범위가 바뀔 때마다 GET /bookings를 새로 호출.
             setRange({ start: arg.start, end: arg.end });

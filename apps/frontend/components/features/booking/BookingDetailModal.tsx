@@ -1,7 +1,7 @@
 'use client';
 
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { toast } from 'sonner';
@@ -17,8 +17,15 @@ import {
   updateBooking,
   updateBookingSchema,
   type BookingDto,
+  type DeleteBookingScope,
   type UpdateBookingInput,
 } from '@/lib/api/bookings';
+import {
+  computeRecurrenceProgress,
+  getRecurrence,
+  updateRecurrence,
+  type RecurrenceDto,
+} from '@/lib/api/recurrences';
 import { cn } from '@/lib/utils';
 import { formatKstDateTime, formatKstTimeRange } from '@/lib/utils/datetime';
 
@@ -41,32 +48,81 @@ const ERROR_TOAST: Partial<Record<string, string>> = {
   BOOKING_PAST_NOT_EDITABLE: '이미 시작된 예약은 수정할 수 없습니다.',
   BOOKING_OWNERSHIP_REQUIRED: '본인 예약만 수정할 수 있습니다.',
   BOOKING_PAST_NOT_DELETABLE: '이미 시작된 예약은 삭제할 수 없습니다.',
+  RECURRENCE_OWNERSHIP_REQUIRED: '본인 시리즈만 수정할 수 있습니다.',
+  RECURRENCE_NOT_FOUND: '반복 시리즈를 찾을 수 없습니다.',
 };
 
+/**
+ * 회차 수정/삭제 범위. UI 라벨과 백엔드 scope 의미를 정렬:
+ *  - instance: 이 회차만
+ *  - following: 이 회차부터 미래 모든 회차
+ *  - series: 시리즈 전체 (회차 + RecurrenceRule)
+ *
+ * 수정 흐름은 "이 회차만"과 "전체"만 직접 지원한다 (이후-수정 단일 API 부재).
+ */
+const SCOPE_LABELS: Record<DeleteBookingScope, string> = {
+  instance: '이 회차만',
+  following: '이후 회차',
+  series: '전체 시리즈',
+};
+
+type ActionMode = 'view' | 'edit-pick' | 'edit-form' | 'edit-series' | 'delete-confirm';
+
 export function BookingDetailModal({ open, onClose, booking }: Props): JSX.Element {
-  const [editMode, setEditMode] = useState(false);
+  const [mode, setMode] = useState<ActionMode>('view');
+  const [editScope, setEditScope] = useState<'instance' | 'series'>('instance');
+  const [deleteScope, setDeleteScope] = useState<DeleteBookingScope>('instance');
   const queryClient = useQueryClient();
 
-  // 모달을 다시 열거나 다른 예약으로 바뀌면 항상 읽기 모드로 시작.
+  const isRecurrence = booking.recurrenceId !== null;
+
+  // 모달을 다시 열거나 다른 예약으로 바뀌면 항상 view 모드로 시작.
   useEffect(() => {
-    if (open) setEditMode(false);
+    if (open) {
+      setMode('view');
+      setEditScope('instance');
+      setDeleteScope('instance');
+    }
   }, [open, booking.id]);
 
-  const updateMutation = useMutation({
+  const recurrenceQuery = useQuery<RecurrenceDto>({
+    queryKey: ['recurrence', booking.recurrenceId],
+    queryFn: () => getRecurrence(booking.recurrenceId!),
+    enabled: open && isRecurrence,
+    staleTime: 60_000,
+  });
+
+  const updateBookingMutation = useMutation({
     mutationFn: (values: UpdateBookingInput) => updateBooking(booking.id, values),
-    onSuccess: () => {
-      toast.success('예약이 수정되었습니다.');
+    onSuccess: (result) => {
+      // 시리즈에서 분리되었으면 사용자에게 명시적으로 안내 — 그 외엔 일반 성공 토스트.
+      const detached = (result as { detachedFromSeries?: true }).detachedFromSeries === true;
+      toast.success(
+        detached ? '이 회차가 시리즈에서 분리되어 수정되었습니다.' : '예약이 수정되었습니다.',
+      );
       void queryClient.invalidateQueries({ queryKey: ['bookings'] });
+      void queryClient.invalidateQueries({ queryKey: ['recurrence'] });
       onClose();
     },
-    // onError는 EditForm 내부에서 RHF setError로 처리 — 그래야 인라인 배너가 폼에 붙는다.
+  });
+
+  const updateSeriesMutation = useMutation({
+    mutationFn: (values: { title?: string; description?: string }) =>
+      updateRecurrence(booking.recurrenceId!, values),
+    onSuccess: () => {
+      toast.success('시리즈 정보가 수정되었습니다.');
+      void queryClient.invalidateQueries({ queryKey: ['bookings'] });
+      void queryClient.invalidateQueries({ queryKey: ['recurrence'] });
+      onClose();
+    },
   });
 
   const deleteMutation = useMutation({
-    mutationFn: () => deleteBooking(booking.id),
+    mutationFn: (scope: DeleteBookingScope | undefined) => deleteBooking(booking.id, scope),
     onSuccess: () => {
       toast.success('예약이 삭제되었습니다.');
       void queryClient.invalidateQueries({ queryKey: ['bookings'] });
+      void queryClient.invalidateQueries({ queryKey: ['recurrence'] });
       onClose();
     },
     onError: (error: ApiError) => {
@@ -74,16 +130,78 @@ export function BookingDetailModal({ open, onClose, booking }: Props): JSX.Eleme
     },
   });
 
+  const recurrenceMeta = recurrenceQuery.data
+    ? computeRecurrenceProgress(recurrenceQuery.data)
+    : undefined;
+
   return (
     <Modal open={open} onClose={onClose} title={booking.title}>
-      {editMode ? (
+      {mode === 'view' ? (
+        <>
+          <ReadView booking={booking} />
+          {isRecurrence ? (
+            <RecurrenceMetaPanel
+              loading={recurrenceQuery.isLoading}
+              recurrenceIndex={booking.recurrenceIndex}
+              meta={recurrenceMeta}
+            />
+          ) : null}
+
+          {booking.isMine ? (
+            <div className="mt-6 flex justify-end gap-2 border-t pt-4">
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={deleteMutation.isPending}
+                onClick={() => {
+                  if (isRecurrence) {
+                    setMode('delete-confirm');
+                  } else if (window.confirm('정말 이 예약을 삭제하시겠어요?')) {
+                    deleteMutation.mutate(undefined);
+                  }
+                }}
+              >
+                {deleteMutation.isPending ? '삭제 중...' : '삭제'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  if (isRecurrence) {
+                    // 반복 회차는 수정 범위를 먼저 골라야 한다.
+                    setMode('edit-pick');
+                    setEditScope('instance');
+                  } else {
+                    setMode('edit-form');
+                  }
+                }}
+              >
+                수정
+              </Button>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+
+      {mode === 'edit-pick' && isRecurrence ? (
+        <EditScopePicker
+          scope={editScope}
+          onChange={setEditScope}
+          onCancel={() => setMode('view')}
+          onConfirm={() => setMode(editScope === 'series' ? 'edit-series' : 'edit-form')}
+          confirmLabel="다음"
+        />
+      ) : null}
+
+      {mode === 'edit-form' ? (
         <EditForm
+          mode={isRecurrence ? 'instance' : 'single'}
           booking={booking}
-          isSubmitting={updateMutation.isPending}
-          onCancel={() => setEditMode(false)}
+          isSubmitting={updateBookingMutation.isPending}
+          onCancel={() => setMode(isRecurrence ? 'edit-pick' : 'view')}
           onSubmit={async (values, { setBannerError }) => {
             try {
-              await updateMutation.mutateAsync(values);
+              await updateBookingMutation.mutateAsync(values);
             } catch (error) {
               const e = error as ApiError;
               if (ERROR_BANNER[e.code] !== undefined) {
@@ -94,32 +212,41 @@ export function BookingDetailModal({ open, onClose, booking }: Props): JSX.Eleme
             }
           }}
         />
-      ) : (
-        <ReadView booking={booking} />
-      )}
+      ) : null}
 
-      {!editMode && booking.isMine ? (
-        <div className="mt-6 flex justify-end gap-2 border-t pt-4">
-          <Button
-            type="button"
-            variant="destructive"
-            disabled={deleteMutation.isPending}
-            onClick={() => {
-              if (window.confirm('정말 이 예약을 삭제하시겠어요?')) {
-                deleteMutation.mutate();
-              }
-            }}
-          >
-            {deleteMutation.isPending ? '삭제 중...' : '삭제'}
-          </Button>
-          <Button type="button" variant="outline" onClick={() => setEditMode(true)}>
-            수정
-          </Button>
-        </div>
+      {mode === 'edit-series' && isRecurrence ? (
+        <SeriesEditForm
+          recurrence={recurrenceQuery.data}
+          fallbackBooking={booking}
+          isSubmitting={updateSeriesMutation.isPending}
+          onCancel={() => setMode('edit-pick')}
+          onSubmit={async (values) => {
+            try {
+              await updateSeriesMutation.mutateAsync(values);
+            } catch (error) {
+              const e = error as ApiError;
+              toast.error(ERROR_TOAST[e.code] ?? e.userMessage);
+            }
+          }}
+        />
+      ) : null}
+
+      {mode === 'delete-confirm' && isRecurrence ? (
+        <DeleteScopeConfirm
+          scope={deleteScope}
+          onChange={setDeleteScope}
+          isSubmitting={deleteMutation.isPending}
+          onCancel={() => setMode('view')}
+          onConfirm={() => deleteMutation.mutate(deleteScope)}
+        />
       ) : null}
     </Modal>
   );
 }
+
+// ---------------------------------------------------------------------------
+// 읽기 뷰
+// ---------------------------------------------------------------------------
 
 function ReadView({ booking }: { booking: BookingDto }): JSX.Element {
   return (
@@ -151,18 +278,136 @@ function ReadView({ booking }: { booking: BookingDto }): JSX.Element {
   );
 }
 
+// ---------------------------------------------------------------------------
+// 시리즈 메타정보 패널
+// ---------------------------------------------------------------------------
+
+interface RecurrenceMetaPanelProps {
+  loading: boolean;
+  recurrenceIndex: number | null;
+  meta?: { total: number; past: number; remaining: number };
+}
+
+function RecurrenceMetaPanel({
+  loading,
+  recurrenceIndex,
+  meta,
+}: RecurrenceMetaPanelProps): JSX.Element {
+  return (
+    <div className="mt-4 rounded-md border border-input bg-muted/30 p-3 text-xs">
+      <div className="mb-1 flex items-center gap-1.5 font-medium text-foreground">
+        <span aria-hidden>↻</span>
+        <span>반복 시리즈</span>
+      </div>
+      {loading ? (
+        <p className="text-muted-foreground">시리즈 정보를 불러오는 중...</p>
+      ) : meta ? (
+        <p className="text-muted-foreground">
+          이번 회차 {recurrenceIndex !== null ? `${recurrenceIndex + 1}` : '-'} / 전체 {meta.total}
+          회 · 진행 {meta.past} / 남은 {meta.remaining}회
+        </p>
+      ) : (
+        <p className="text-muted-foreground">시리즈 정보를 불러오지 못했습니다.</p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 수정 범위 선택
+// ---------------------------------------------------------------------------
+
+interface EditScopePickerProps {
+  scope: 'instance' | 'series';
+  onChange: (scope: 'instance' | 'series') => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+  confirmLabel: string;
+}
+
+/**
+ * 수정 범위 선택기. "이후 회차" 옵션은 비활성으로 노출 — 단일 API 부재로 일괄 수정은 미지원.
+ */
+function EditScopePicker({
+  scope,
+  onChange,
+  onCancel,
+  onConfirm,
+  confirmLabel,
+}: EditScopePickerProps): JSX.Element {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted-foreground">수정 범위를 선택해 주세요.</p>
+      <div className="space-y-2 text-sm">
+        <label className="flex items-start gap-2">
+          <input
+            type="radio"
+            className="mt-1"
+            checked={scope === 'instance'}
+            onChange={() => onChange('instance')}
+          />
+          <span>
+            <span className="font-medium">{SCOPE_LABELS.instance}</span>
+            <span className="block text-xs text-muted-foreground">
+              해당 회차만 수정됩니다. 시리즈에서 자동으로 분리됩니다.
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 opacity-60">
+          <input type="radio" className="mt-1" disabled />
+          <span>
+            <span className="font-medium">{SCOPE_LABELS.following}</span>
+            <span className="block text-xs text-muted-foreground">
+              이후 회차의 일괄 수정은 지원하지 않습니다. 시간 변경이 필요하면 시리즈 삭제 후
+              재생성하세요.
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2">
+          <input
+            type="radio"
+            className="mt-1"
+            checked={scope === 'series'}
+            onChange={() => onChange('series')}
+          />
+          <span>
+            <span className="font-medium">{SCOPE_LABELS.series}</span>
+            <span className="block text-xs text-muted-foreground">
+              제목/설명만 변경할 수 있습니다 (시간/회의실은 시리즈 단위로 변경 불가).
+            </span>
+          </span>
+        </label>
+      </div>
+      <div className="flex justify-end gap-2 border-t pt-3">
+        <Button type="button" variant="outline" onClick={onCancel}>
+          취소
+        </Button>
+        <Button type="button" onClick={onConfirm}>
+          {confirmLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 단일/회차 수정 폼 (시간/제목/설명)
+// ---------------------------------------------------------------------------
+
 interface EditFormHandlers {
   setBannerError: (message: string) => void;
 }
 
 interface EditFormProps {
+  /** 'single'은 단일 예약, 'instance'는 반복 회차(자동 분리) — 라벨 외 동작 동일. */
+  mode: 'single' | 'instance';
   booking: BookingDto;
   isSubmitting: boolean;
   onCancel: () => void;
   onSubmit: (values: UpdateBookingInput, handlers: EditFormHandlers) => Promise<void>;
 }
 
-function EditForm({ booking, isSubmitting, onCancel, onSubmit }: EditFormProps): JSX.Element {
+function EditForm({ mode, booking, isSubmitting, onCancel, onSubmit }: EditFormProps): JSX.Element {
   const {
     register,
     control,
@@ -191,6 +436,12 @@ function EditForm({ booking, isSubmitting, onCancel, onSubmit }: EditFormProps):
 
   return (
     <form onSubmit={submit} className="space-y-4" noValidate>
+      {mode === 'instance' ? (
+        <p className="rounded-md border border-input bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          저장하면 이 회차가 시리즈에서 자동으로 분리되며 단독 예약으로 전환됩니다.
+        </p>
+      ) : null}
+
       {banner ? (
         <div
           role="alert"
@@ -268,4 +519,141 @@ function EditForm({ booking, isSubmitting, onCancel, onSubmit }: EditFormProps):
       </div>
     </form>
   );
+}
+
+// ---------------------------------------------------------------------------
+// 시리즈 수정 폼 (제목/설명만)
+// ---------------------------------------------------------------------------
+
+interface SeriesEditFormProps {
+  recurrence: RecurrenceDto | undefined;
+  fallbackBooking: BookingDto;
+  isSubmitting: boolean;
+  onCancel: () => void;
+  onSubmit: (values: { title?: string; description?: string }) => Promise<void>;
+}
+
+function SeriesEditForm({
+  recurrence,
+  fallbackBooking,
+  isSubmitting,
+  onCancel,
+  onSubmit,
+}: SeriesEditFormProps): JSX.Element {
+  // 시리즈 데이터가 아직 없으면 회차 정보로 초기값 채움 — 사용자 대기 시간 단축.
+  const initialTitle = recurrence?.title ?? fallbackBooking.title;
+  const initialDescription = recurrence?.description ?? fallbackBooking.description ?? '';
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<{ title: string; description: string }>({
+    defaultValues: { title: initialTitle, description: initialDescription },
+  });
+
+  const submit = handleSubmit(async (values) => {
+    await onSubmit({
+      title: values.title,
+      description: values.description,
+    });
+  });
+
+  return (
+    <form onSubmit={submit} className="space-y-4" noValidate>
+      <p className="rounded-md border border-input bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        전체 시리즈 — 제목과 설명만 수정할 수 있습니다.
+      </p>
+
+      <div>
+        <Label htmlFor="series-title">제목</Label>
+        <Input
+          id="series-title"
+          maxLength={200}
+          aria-invalid={Boolean(errors.title)}
+          className={cn(errors.title && 'border-destructive')}
+          {...register('title', { required: '제목을 입력해주세요.' })}
+        />
+        <FieldError message={errors.title?.message} />
+      </div>
+
+      <div>
+        <Label htmlFor="series-description">설명</Label>
+        <textarea
+          id="series-description"
+          className={cn(
+            'flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            errors.description && 'border-destructive',
+          )}
+          maxLength={2000}
+          {...register('description')}
+        />
+      </div>
+
+      <div className="flex justify-end gap-2 pt-2">
+        <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>
+          취소
+        </Button>
+        <Button type="submit" disabled={isSubmitting}>
+          {isSubmitting ? '저장 중...' : '저장'}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 삭제 범위 확인
+// ---------------------------------------------------------------------------
+
+interface DeleteScopeConfirmProps {
+  scope: DeleteBookingScope;
+  onChange: (scope: DeleteBookingScope) => void;
+  isSubmitting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+function DeleteScopeConfirm({
+  scope,
+  onChange,
+  isSubmitting,
+  onCancel,
+  onConfirm,
+}: DeleteScopeConfirmProps): JSX.Element {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted-foreground">삭제 범위를 선택해 주세요.</p>
+      <div className="space-y-2 text-sm">
+        {(['instance', 'following', 'series'] as DeleteBookingScope[]).map((s) => (
+          <label key={s} className="flex items-start gap-2">
+            <input
+              type="radio"
+              className="mt-1"
+              checked={scope === s}
+              onChange={() => onChange(s)}
+            />
+            <span>
+              <span className="font-medium">{SCOPE_LABELS[s]}</span>
+              <span className="block text-xs text-muted-foreground">{describeDeleteScope(s)}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+      <div className="flex justify-end gap-2 border-t pt-3">
+        <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>
+          취소
+        </Button>
+        <Button type="button" variant="destructive" onClick={onConfirm} disabled={isSubmitting}>
+          {isSubmitting ? '삭제 중...' : '삭제'}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function describeDeleteScope(scope: DeleteBookingScope): string {
+  if (scope === 'instance') return '이 회차만 삭제하고 시리즈에 예외(EXDATE)로 등록합니다.';
+  if (scope === 'following') return '이 회차부터 미래의 모든 회차를 삭제합니다.';
+  return '시리즈 전체와 모든 미래 회차를 삭제합니다.';
 }

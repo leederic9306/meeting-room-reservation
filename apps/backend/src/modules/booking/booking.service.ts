@@ -9,8 +9,14 @@ import { Prisma, UserRole } from '@prisma/client';
 
 import { PrismaService } from '../../infra/prisma/prisma.service';
 
-import { type BookingDto, type BookingWithRelations, toBookingDto } from './dto/booking.dto';
+import {
+  type BookingDto,
+  type BookingWithRelations,
+  type UpdateBookingResponseDto,
+  toBookingDto,
+} from './dto/booking.dto';
 import type { CreateBookingDto } from './dto/create-booking.dto';
+import { DeleteBookingScope } from './dto/delete-booking.query';
 import type { ListBookingsQuery } from './dto/list-bookings.query';
 import type { UpdateBookingDto } from './dto/update-booking.dto';
 
@@ -135,7 +141,11 @@ export class BookingService {
   // 수정
   // ---------------------------------------------------------------------------
 
-  async update(id: string, dto: UpdateBookingDto, actor: ActorContext): Promise<BookingDto> {
+  async update(
+    id: string,
+    dto: UpdateBookingDto,
+    actor: ActorContext,
+  ): Promise<UpdateBookingResponseDto> {
     const existing = await this.prisma.booking.findFirst({
       where: { id, deletedAt: null },
     });
@@ -174,15 +184,30 @@ export class BookingService {
       this.assertDurationWithinLimit(nextStart, nextEnd);
     }
 
+    const updateData: Prisma.BookingUpdateInput = {
+      ...(dto.title !== undefined && { title: dto.title }),
+      ...(dto.description !== undefined && { description: dto.description }),
+      ...(dto.startAt !== undefined && { startAt: nextStart }),
+      ...(dto.endAt !== undefined && { endAt: nextEnd }),
+    };
+
+    // 반복 회차(recurrenceId !== null) 수정은 자동으로 시리즈에서 분리한다.
+    // docs/03-api-spec.md §4.4 — recurrenceId/Index NULL 처리 + 원 시리즈에 EXDATE 추가.
+    // (단일 예약은 그대로 일반 update)
+    if (existing.recurrenceId !== null) {
+      return await this.detachInstanceAndUpdate(
+        id,
+        existing.recurrenceId,
+        existing.startAt,
+        updateData,
+        actor.id,
+      );
+    }
+
     try {
       const updated = await this.prisma.booking.update({
         where: { id },
-        data: {
-          ...(dto.title !== undefined && { title: dto.title }),
-          ...(dto.description !== undefined && { description: dto.description }),
-          ...(dto.startAt !== undefined && { startAt: nextStart }),
-          ...(dto.endAt !== undefined && { endAt: nextEnd }),
-        },
+        data: updateData,
         include: BOOKING_RELATIONS,
       });
       return toBookingDto(updated as BookingWithRelations, actor.id);
@@ -191,11 +216,89 @@ export class BookingService {
     }
   }
 
+  /**
+   * 반복 회차를 수정하면서 시리즈에서 분리.
+   * - booking.recurrenceId / recurrenceIndex를 NULL로 만들고 사용자가 보낸 변경을 적용.
+   * - 원 시리즈에 RecurrenceException(excludedDate=원래 시작일의 KST 일자) 추가.
+   * - 같은 일자 EXDATE가 이미 있으면(P2002) 예외만 무시하고 분리는 그대로 수행.
+   *
+   * 트랜잭션 안에서 booking 업데이트와 EXDATE 추가가 함께 일어나야 한다 — 둘 중 하나만
+   * 성공하면 시리즈 펼침 결과와 booking 행이 어긋난다.
+   */
+  private async detachInstanceAndUpdate(
+    id: string,
+    recurrenceId: string,
+    originalStartAt: Date,
+    updateData: Prisma.BookingUpdateInput,
+    viewerId: string,
+  ): Promise<UpdateBookingResponseDto> {
+    const excludedDateUtc = kstDayStartUtc(originalStartAt);
+    const detachData: Prisma.BookingUpdateInput = {
+      ...updateData,
+      recurrence: { disconnect: true },
+      recurrenceIndex: null,
+    };
+
+    try {
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const next = await tx.booking.update({
+          where: { id },
+          data: detachData,
+          include: BOOKING_RELATIONS,
+        });
+        await tx.recurrenceException.create({
+          data: {
+            recurrenceId,
+            excludedDate: excludedDateUtc,
+            reason: null,
+          },
+        });
+        return next;
+      });
+      return {
+        ...toBookingDto(updated as BookingWithRelations, viewerId),
+        detachedFromSeries: true,
+      };
+    } catch (error) {
+      // 같은 일자에 EXDATE가 이미 등록된 경우 — booking 분리만 수행.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        try {
+          const updated = await this.prisma.booking.update({
+            where: { id },
+            data: detachData,
+            include: BOOKING_RELATIONS,
+          });
+          return {
+            ...toBookingDto(updated as BookingWithRelations, viewerId),
+            detachedFromSeries: true,
+          };
+        } catch (fallbackError) {
+          throw this.mapPrismaError(fallbackError);
+        }
+      }
+      throw this.mapPrismaError(error);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // 삭제 (소프트)
   // ---------------------------------------------------------------------------
 
-  async softDelete(id: string, actor: ActorContext): Promise<void> {
+  /**
+   * 예약 삭제. docs/03-api-spec.md §4.5.
+   *
+   * `scope`는 반복 회차에서만 의미 있다. 단일 예약(`recurrenceId=null`)은 항상 단순
+   * 소프트 삭제로 처리된다.
+   *
+   * - INSTANCE (기본): 해당 회차만 소프트 삭제 + RecurrenceException 추가
+   * - FOLLOWING       : 이 회차부터 미래 모든 회차 소프트 삭제 + 시리즈 untilAt 단축
+   * - SERIES          : 시리즈 전체 삭제 (모든 미래 회차 + RecurrenceRule)
+   */
+  async softDelete(
+    id: string,
+    actor: ActorContext,
+    scope: DeleteBookingScope = DeleteBookingScope.INSTANCE,
+  ): Promise<void> {
     const existing = await this.prisma.booking.findFirst({
       where: { id, deletedAt: null },
     });
@@ -220,10 +323,132 @@ export class BookingService {
       });
     }
 
-    await this.prisma.booking.update({
-      where: { id },
-      data: { deletedAt: new Date() },
-    });
+    // 단일 예약: scope 값과 무관하게 단순 소프트 삭제.
+    if (existing.recurrenceId === null) {
+      await this.prisma.booking.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      });
+      return;
+    }
+
+    const recurrenceId = existing.recurrenceId;
+    const now = new Date();
+
+    if (scope === DeleteBookingScope.INSTANCE) {
+      // 해당 회차 소프트 삭제 + RecurrenceException 등록.
+      // excludedDate는 KST 일자(`startAt`을 KST 캘린더로 절단)로 저장.
+      const excludedDateUtc = kstDayStartUtc(existing.startAt);
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.booking.update({
+            where: { id },
+            data: { deletedAt: now },
+          });
+          await tx.recurrenceException.create({
+            data: {
+              recurrenceId,
+              excludedDate: excludedDateUtc,
+              reason: null,
+            },
+          });
+        });
+      } catch (error) {
+        // 이미 같은 일자에 RecurrenceException이 등록되어 있는 경우 — booking만 소프트 삭제.
+        // (회차의 일자별 EXDATE는 unique 제약이므로 P2002 가능)
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+          await this.prisma.booking.update({
+            where: { id },
+            data: { deletedAt: now },
+          });
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+
+    if (scope === DeleteBookingScope.FOLLOWING) {
+      // 이 회차 startAt 이상의 미래 회차들을 소프트 삭제 + 시리즈 untilAt을 직전으로 단축.
+      const cutoff = existing.startAt;
+      await this.prisma.$transaction([
+        this.prisma.booking.updateMany({
+          where: {
+            recurrenceId,
+            startAt: { gte: cutoff },
+            deletedAt: null,
+          },
+          data: { deletedAt: now },
+        }),
+        // untilAt = cutoff (이 회차 직전까지 유효). 회차의 endAt이 아닌 startAt을 사용 —
+        // "이 회차부터 미래"를 잘라낸 의미를 그대로 표현.
+        this.prisma.recurrenceRule.update({
+          where: { id: recurrenceId },
+          data: { untilAt: cutoff },
+        }),
+      ]);
+      return;
+    }
+
+    // SERIES: 미래 회차 소프트 삭제 + RecurrenceRule 하드 삭제.
+    // 과거 회차는 감사/회고 목적으로 유지 (FK onDelete: SetNull로 recurrenceId만 떨어짐).
+    await this.prisma.$transaction([
+      this.prisma.booking.updateMany({
+        where: {
+          recurrenceId,
+          startAt: { gte: now },
+          deletedAt: null,
+        },
+        data: { deletedAt: now },
+      }),
+      this.prisma.recurrenceRule.delete({ where: { id: recurrenceId } }),
+    ]);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 회차 인스턴스 일괄 충돌 검사 (반복 예약 시리즈용)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 동일 회의실의 기존 예약과 시간이 겹치는 회차 인스턴스의 인덱스를 반환한다.
+   *
+   * 단일 SQL 쿼리(VALUES + tstzrange `&&`) 로 모든 인스턴스를 한 번에 비교하므로
+   * 회차 수 N에 대해 N+1 쿼리가 발생하지 않는다. EXCLUDE 제약과 동일한
+   * `tstzrange(..., '[)')` 반열림 구간을 사용해 9-10시 / 10-11시 같은 인접 예약은
+   * 충돌로 판정하지 않는다.
+   *
+   * 입력 인스턴스 간의 자체 겹침은 검사하지 않는다(rrule 펼침 결과는 정의상
+   * 서로 겹치지 않음). 호출자(reucrrence service) 가 RRULE 검증을 선행하는 것을 전제.
+   *
+   * @returns 충돌이 발생한 인스턴스의 인덱스(0-base) 오름차순 배열
+   */
+  async findConflictingInstanceIndices(
+    roomId: string,
+    instances: ReadonlyArray<{ startAt: Date; endAt: Date }>,
+  ): Promise<number[]> {
+    if (instances.length === 0) return [];
+
+    const valuesRows = instances.map(
+      (inst, idx) =>
+        Prisma.sql`(${idx}::int, tstzrange(${inst.startAt}::timestamptz, ${inst.endAt}::timestamptz, '[)'))`,
+    );
+
+    const rows = await this.prisma.$queryRaw<Array<{ idx: number | bigint }>>(
+      Prisma.sql`
+        WITH instances(idx, rng) AS (
+          VALUES ${Prisma.join(valuesRows)}
+        )
+        SELECT DISTINCT i.idx
+        FROM instances i
+        JOIN booking b
+          ON b.room_id = ${roomId}::uuid
+         AND b.deleted_at IS NULL
+         AND tstzrange(b.start_at, b.end_at, '[)') && i.rng
+        ORDER BY i.idx ASC
+      `,
+    );
+
+    return rows.map((r) => Number(r.idx));
   }
 
   // ---------------------------------------------------------------------------
@@ -337,4 +562,18 @@ function isExcludeConflictError(error: unknown): boolean {
     if (meta?.code === '23P01') return true;
   }
   return false;
+}
+
+/**
+ * 임의의 UTC instant를 KST 캘린더상 같은 일자의 00:00 KST에 해당하는 UTC instant로 변환.
+ * 예: 2026-04-27T00:00:00Z (KST 09:00) → 2026-04-26T15:00:00Z (KST 00:00)
+ *
+ * RecurrenceException.excludedDate(DATE 컬럼) 저장 시 사용 — 시간 부분은 DB에서 잘리지만
+ * 명시적 경계로 변환해 컬럼간 의도 일관성을 유지한다.
+ */
+function kstDayStartUtc(instant: Date): Date {
+  const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+  const kstMs = instant.getTime() + KST_OFFSET_MS;
+  const kstDayStartMs = Math.floor(kstMs / (24 * 60 * 60 * 1000)) * (24 * 60 * 60 * 1000);
+  return new Date(kstDayStartMs - KST_OFFSET_MS);
 }

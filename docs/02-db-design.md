@@ -1,6 +1,7 @@
 # DB 설계 — 사내 회의실 예약 시스템
 
 > **문서 정보**
+>
 > - 버전: 1.0
 > - 작성일: 2026-04-23
 > - 대상 DB: PostgreSQL 16
@@ -176,27 +177,29 @@
 
 ### 3.1 User — 사용자
 
-| 컬럼 | 타입 | 제약 | 설명 |
-|---|---|---|---|
-| id | uuid | PK | 사용자 식별자 |
-| email | varchar(255) | UNIQUE NOT NULL | 로그인 ID, 도메인 제한 없음 |
-| password_hash | varchar(255) | NOT NULL | argon2 해시 |
-| name | varchar(50) | NOT NULL | 표시 이름 |
-| department | varchar(100) | NULL | 부서/팀 |
-| employee_no | varchar(50) | NULL | 사번 |
-| phone | varchar(20) | NULL | 연락처 |
-| role | enum | NOT NULL DEFAULT 'USER' | USER, ADMIN |
-| status | enum | NOT NULL DEFAULT 'PENDING' | PENDING, ACTIVE, LOCKED, DELETED |
-| locked_until | timestamptz | NULL | 로그인 잠금 해제 시각 |
-| last_login_at | timestamptz | NULL | 마지막 로그인 시각 |
-| created_at | timestamptz | NOT NULL DEFAULT now() | |
-| updated_at | timestamptz | NOT NULL DEFAULT now() | |
+| 컬럼          | 타입         | 제약                       | 설명                             |
+| ------------- | ------------ | -------------------------- | -------------------------------- |
+| id            | uuid         | PK                         | 사용자 식별자                    |
+| email         | varchar(255) | UNIQUE NOT NULL            | 로그인 ID, 도메인 제한 없음      |
+| password_hash | varchar(255) | NOT NULL                   | argon2 해시                      |
+| name          | varchar(50)  | NOT NULL                   | 표시 이름                        |
+| department    | varchar(100) | NULL                       | 부서/팀                          |
+| employee_no   | varchar(50)  | NULL                       | 사번                             |
+| phone         | varchar(20)  | NULL                       | 연락처                           |
+| role          | enum         | NOT NULL DEFAULT 'USER'    | USER, ADMIN                      |
+| status        | enum         | NOT NULL DEFAULT 'PENDING' | PENDING, ACTIVE, LOCKED, DELETED |
+| locked_until  | timestamptz  | NULL                       | 로그인 잠금 해제 시각            |
+| last_login_at | timestamptz  | NULL                       | 마지막 로그인 시각               |
+| created_at    | timestamptz  | NOT NULL DEFAULT now()     |                                  |
+| updated_at    | timestamptz  | NOT NULL DEFAULT now()     |                                  |
 
 **인덱스**
+
 - `idx_user_email` (email) — 로그인 조회
 - `idx_user_status` (status) — 미인증 계정 정리 배치용
 
 **비고**
+
 - 소프트 삭제 시 `status = 'DELETED'`, 이메일에 `_deleted_<timestamp>` suffix 추가하여 재가입 가능
 - AUTH-009 (24시간 자동 삭제) 처리: cron 또는 pg_cron 으로 `status = 'PENDING' AND created_at < now() - interval '24 hours'` 삭제
 
@@ -204,21 +207,23 @@
 
 ### 3.2 EmailVerification — 이메일 인증 코드
 
-| 컬럼 | 타입 | 제약 | 설명 |
-|---|---|---|---|
-| id | uuid | PK | |
-| user_id | uuid | FK → User.id, ON DELETE CASCADE | |
-| code | varchar(6) | NOT NULL | 6자리 숫자 코드 (해시 저장 권장) |
-| expires_at | timestamptz | NOT NULL | 발송 시점 + 10분 |
-| attempt_count | int | NOT NULL DEFAULT 0 | 최대 5 |
-| verified_at | timestamptz | NULL | 인증 완료 시각 |
-| sent_at | timestamptz | NOT NULL DEFAULT now() | 재발송 쿨다운 계산용 |
+| 컬럼          | 타입        | 제약                            | 설명                             |
+| ------------- | ----------- | ------------------------------- | -------------------------------- |
+| id            | uuid        | PK                              |                                  |
+| user_id       | uuid        | FK → User.id, ON DELETE CASCADE |                                  |
+| code          | varchar(6)  | NOT NULL                        | 6자리 숫자 코드 (해시 저장 권장) |
+| expires_at    | timestamptz | NOT NULL                        | 발송 시점 + 10분                 |
+| attempt_count | int         | NOT NULL DEFAULT 0              | 최대 5                           |
+| verified_at   | timestamptz | NULL                            | 인증 완료 시각                   |
+| sent_at       | timestamptz | NOT NULL DEFAULT now()          | 재발송 쿨다운 계산용             |
 
 **인덱스**
+
 - `idx_email_verification_user` (user_id) — 사용자별 최신 코드 조회
 - `idx_email_verification_user_active` (user_id, verified_at) WHERE verified_at IS NULL
 
 **비고**
+
 - 같은 사용자에게 여러 코드가 쌓일 수 있음 — 인증 성공 시 모두 폐기
 - **코드 저장 방식**: 환경별 분기
   - 로컬/개발 환경: 평문 저장 (디버깅 편의)
@@ -229,18 +234,19 @@
 
 ### 3.3 RefreshToken — 리프레시 토큰
 
-| 컬럼 | 타입 | 제약 | 설명 |
-|---|---|---|---|
-| id | uuid | PK | |
-| user_id | uuid | FK → User.id, ON DELETE CASCADE | |
-| token_hash | varchar(255) | UNIQUE NOT NULL | SHA-256 해시 |
-| user_agent | varchar(500) | NULL | 디바이스 식별 |
-| ip_address | inet | NULL | 발급 IP |
-| expires_at | timestamptz | NOT NULL | 발급 + 14일 |
-| revoked_at | timestamptz | NULL | 로그아웃/회수 시각 |
-| created_at | timestamptz | NOT NULL DEFAULT now() | |
+| 컬럼       | 타입         | 제약                            | 설명               |
+| ---------- | ------------ | ------------------------------- | ------------------ |
+| id         | uuid         | PK                              |                    |
+| user_id    | uuid         | FK → User.id, ON DELETE CASCADE |                    |
+| token_hash | varchar(255) | UNIQUE NOT NULL                 | SHA-256 해시       |
+| user_agent | varchar(500) | NULL                            | 디바이스 식별      |
+| ip_address | inet         | NULL                            | 발급 IP            |
+| expires_at | timestamptz  | NOT NULL                        | 발급 + 14일        |
+| revoked_at | timestamptz  | NULL                            | 로그아웃/회수 시각 |
+| created_at | timestamptz  | NOT NULL DEFAULT now()          |                    |
 
 **인덱스**
+
 - `idx_refresh_token_hash` (token_hash) — 검증 조회
 - `idx_refresh_token_user_active` (user_id, revoked_at) WHERE revoked_at IS NULL
 
@@ -248,72 +254,75 @@
 
 ### 3.4 PasswordReset — 비밀번호 재설정 토큰
 
-| 컬럼 | 타입 | 제약 | 설명 |
-|---|---|---|---|
-| id | uuid | PK | |
-| user_id | uuid | FK → User.id, ON DELETE CASCADE | |
-| token_hash | varchar(255) | UNIQUE NOT NULL | |
-| expires_at | timestamptz | NOT NULL | 발급 + 1시간 |
-| used_at | timestamptz | NULL | 사용 시각 |
-| created_at | timestamptz | NOT NULL DEFAULT now() | |
+| 컬럼       | 타입         | 제약                            | 설명         |
+| ---------- | ------------ | ------------------------------- | ------------ |
+| id         | uuid         | PK                              |              |
+| user_id    | uuid         | FK → User.id, ON DELETE CASCADE |              |
+| token_hash | varchar(255) | UNIQUE NOT NULL                 |              |
+| expires_at | timestamptz  | NOT NULL                        | 발급 + 1시간 |
+| used_at    | timestamptz  | NULL                            | 사용 시각    |
+| created_at | timestamptz  | NOT NULL DEFAULT now()          |              |
 
 ---
 
 ### 3.5 LoginAttempt — 로그인 시도 이력
 
-| 컬럼 | 타입 | 제약 | 설명 |
-|---|---|---|---|
-| id | uuid | PK | |
-| email | varchar(255) | NOT NULL | 시도된 이메일 (계정 미존재 케이스 포함) |
-| ip_address | inet | NULL | |
-| success | boolean | NOT NULL | |
-| attempted_at | timestamptz | NOT NULL DEFAULT now() | |
+| 컬럼         | 타입         | 제약                   | 설명                                    |
+| ------------ | ------------ | ---------------------- | --------------------------------------- |
+| id           | uuid         | PK                     |                                         |
+| email        | varchar(255) | NOT NULL               | 시도된 이메일 (계정 미존재 케이스 포함) |
+| ip_address   | inet         | NULL                   |                                         |
+| success      | boolean      | NOT NULL               |                                         |
+| attempted_at | timestamptz  | NOT NULL DEFAULT now() |                                         |
 
 **인덱스**
+
 - `idx_login_attempt_email_recent` (email, attempted_at DESC) — 최근 5회 실패 조회
 
 **비고**
+
 - 30일 이상 된 데이터는 정기 삭제 (감사 목적이면 보관)
 
 ---
 
 ### 3.6 Room — 회의실
 
-| 컬럼 | 타입 | 제약 | 설명 |
-|---|---|---|---|
-| id | uuid | PK | |
-| name | varchar(100) | UNIQUE NOT NULL | 회의실 이름 |
-| capacity | int | NULL | 수용 인원 |
-| location | varchar(200) | NULL | 위치 (예: "본관 3층") |
-| description | text | NULL | |
-| is_active | boolean | NOT NULL DEFAULT true | 비활성 시 신규 예약 불가 |
-| display_order | int | NOT NULL DEFAULT 0 | 캘린더 표시 순서 |
-| created_at | timestamptz | NOT NULL DEFAULT now() | |
-| updated_at | timestamptz | NOT NULL DEFAULT now() | |
+| 컬럼          | 타입         | 제약                   | 설명                     |
+| ------------- | ------------ | ---------------------- | ------------------------ |
+| id            | uuid         | PK                     |                          |
+| name          | varchar(100) | UNIQUE NOT NULL        | 회의실 이름              |
+| capacity      | int          | NULL                   | 수용 인원                |
+| location      | varchar(200) | NULL                   | 위치 (예: "본관 3층")    |
+| description   | text         | NULL                   |                          |
+| is_active     | boolean      | NOT NULL DEFAULT true  | 비활성 시 신규 예약 불가 |
+| display_order | int          | NOT NULL DEFAULT 0     | 캘린더 표시 순서         |
+| created_at    | timestamptz  | NOT NULL DEFAULT now() |                          |
+| updated_at    | timestamptz  | NOT NULL DEFAULT now() |                          |
 
 **인덱스**
+
 - `idx_room_active_order` (is_active, display_order) — 캘린더 회의실 목록
 
 ---
 
 ### 3.7 Booking — 예약 (가장 중요)
 
-| 컬럼 | 타입 | 제약 | 설명 |
-|---|---|---|---|
-| id | uuid | PK | |
-| room_id | uuid | FK → Room.id, ON DELETE RESTRICT | 회의실 |
-| user_id | uuid | FK → User.id, ON DELETE RESTRICT | 예약자 |
-| title | varchar(200) | NOT NULL | 회의 제목 |
-| description | text | NULL | 설명 |
-| start_at | timestamptz | NOT NULL | 시작 시각 (UTC) |
-| end_at | timestamptz | NOT NULL | 종료 시각 (UTC) |
-| recurrence_id | uuid | FK → RecurrenceRule.id, NULL | 반복 시리즈 ID (단일 예약은 NULL) |
-| recurrence_index | int | NULL | 시리즈 내 회차 순번 (0부터) |
-| created_by_admin | boolean | NOT NULL DEFAULT false | ADMIN이 예외로 생성한 경우 true |
-| exception_request_id | uuid | FK → ExceptionRequest.id, NULL | 승인 요청에서 생성된 경우 추적 |
-| created_at | timestamptz | NOT NULL DEFAULT now() | |
-| updated_at | timestamptz | NOT NULL DEFAULT now() | |
-| deleted_at | timestamptz | NULL | 소프트 삭제 |
+| 컬럼                 | 타입         | 제약                             | 설명                              |
+| -------------------- | ------------ | -------------------------------- | --------------------------------- |
+| id                   | uuid         | PK                               |                                   |
+| room_id              | uuid         | FK → Room.id, ON DELETE RESTRICT | 회의실                            |
+| user_id              | uuid         | FK → User.id, ON DELETE RESTRICT | 예약자                            |
+| title                | varchar(200) | NOT NULL                         | 회의 제목                         |
+| description          | text         | NULL                             | 설명                              |
+| start_at             | timestamptz  | NOT NULL                         | 시작 시각 (UTC)                   |
+| end_at               | timestamptz  | NOT NULL                         | 종료 시각 (UTC)                   |
+| recurrence_id        | uuid         | FK → RecurrenceRule.id, NULL     | 반복 시리즈 ID (단일 예약은 NULL) |
+| recurrence_index     | int          | NULL                             | 시리즈 내 회차 순번 (0부터)       |
+| created_by_admin     | boolean      | NOT NULL DEFAULT false           | ADMIN이 예외로 생성한 경우 true   |
+| exception_request_id | uuid         | FK → ExceptionRequest.id, NULL   | 승인 요청에서 생성된 경우 추적    |
+| created_at           | timestamptz  | NOT NULL DEFAULT now()           |                                   |
+| updated_at           | timestamptz  | NOT NULL DEFAULT now()           |                                   |
+| deleted_at           | timestamptz  | NULL                             | 소프트 삭제                       |
 
 **제약**
 
@@ -341,11 +350,13 @@ EXCLUDE USING gist (
 ```
 
 **인덱스**
+
 - `idx_booking_room_time` (room_id, start_at, end_at) WHERE deleted_at IS NULL — 캘린더 조회 핵심
 - `idx_booking_user_time` (user_id, start_at) WHERE deleted_at IS NULL — 내 예약 조회
 - `idx_booking_recurrence` (recurrence_id) WHERE recurrence_id IS NOT NULL — 시리즈 조회
 
 **비고**
+
 - `tstzrange '[)'` — 시작은 포함, 종료는 미포함. 9:00-10:00과 10:00-11:00은 겹치지 않음.
 - `btree_gist` 확장 활성화 필수: `CREATE EXTENSION IF NOT EXISTS btree_gist;`
 - 소프트 삭제는 EXCLUDE 제약의 WHERE 절로 처리
@@ -354,19 +365,19 @@ EXCLUDE USING gist (
 
 ### 3.8 RecurrenceRule — 반복 예약 시리즈
 
-| 컬럼 | 타입 | 제약 | 설명 |
-|---|---|---|---|
-| id | uuid | PK | |
-| room_id | uuid | FK → Room.id, ON DELETE RESTRICT | |
-| user_id | uuid | FK → User.id, ON DELETE RESTRICT | |
-| title | varchar(200) | NOT NULL | 시리즈 제목 (개별 회차 수정 가능) |
-| description | text | NULL | |
-| rrule | text | NOT NULL | RFC 5545 RRULE 문자열 |
-| duration_minutes | int | NOT NULL | 회차당 길이 (15의 배수, 최대 240) |
-| start_at | timestamptz | NOT NULL | 첫 회차 시작 시각 |
-| until_at | timestamptz | NOT NULL | 시스템상 1년 제한 |
-| created_at | timestamptz | NOT NULL DEFAULT now() | |
-| updated_at | timestamptz | NOT NULL DEFAULT now() | |
+| 컬럼             | 타입         | 제약                             | 설명                              |
+| ---------------- | ------------ | -------------------------------- | --------------------------------- |
+| id               | uuid         | PK                               |                                   |
+| room_id          | uuid         | FK → Room.id, ON DELETE RESTRICT |                                   |
+| user_id          | uuid         | FK → User.id, ON DELETE RESTRICT |                                   |
+| title            | varchar(200) | NOT NULL                         | 시리즈 제목 (개별 회차 수정 가능) |
+| description      | text         | NULL                             |                                   |
+| rrule            | text         | NOT NULL                         | RFC 5545 RRULE 문자열             |
+| duration_minutes | int          | NOT NULL                         | 회차당 길이 (15의 배수, 최대 240) |
+| start_at         | timestamptz  | NOT NULL                         | 첫 회차 시작 시각                 |
+| until_at         | timestamptz  | NOT NULL                         | 시스템상 1년 제한                 |
+| created_at       | timestamptz  | NOT NULL DEFAULT now()           |                                   |
+| updated_at       | timestamptz  | NOT NULL DEFAULT now()           |                                   |
 
 **제약**
 
@@ -376,27 +387,31 @@ CHECK (until_at <= start_at + interval '1 year')
 ```
 
 **비고**
+
 - RRULE 예시: `FREQ=WEEKLY;BYDAY=MO;COUNT=12` → 월요일 12회
-- 회차 인스턴스는 Booking 테이블에 미리 펼쳐서 저장 (확장 전략)
-- 이유: 충돌 검증을 단순한 SQL로 처리, 캘린더 조회 시 RRULE 파싱 불필요
+- 회차 인스턴스는 Booking 테이블에 **미리 펼쳐서 저장 (확장 전략, Method A)**
+- 이유: 충돌 검증을 EXCLUDE 제약으로 race-safe하게 단일화, 캘린더 조회 시 RRULE 파싱 불필요
 - 시리즈 수정 시 미래 Booking 행 재생성
+- **정량 근거**: 부록 A "Method A vs B 벤치마크" 참조 (1년 매일 시리즈 10개 기준)
 
 ---
 
 ### 3.9 RecurrenceException — 반복 예약 예외 일자
 
-| 컬럼 | 타입 | 제약 | 설명 |
-|---|---|---|---|
-| id | uuid | PK | |
-| recurrence_id | uuid | FK → RecurrenceRule.id, ON DELETE CASCADE | |
-| excluded_date | date | NOT NULL | 제외할 일자 (날짜 단위) |
-| reason | varchar(500) | NULL | |
-| created_at | timestamptz | NOT NULL DEFAULT now() | |
+| 컬럼          | 타입         | 제약                                      | 설명                    |
+| ------------- | ------------ | ----------------------------------------- | ----------------------- |
+| id            | uuid         | PK                                        |                         |
+| recurrence_id | uuid         | FK → RecurrenceRule.id, ON DELETE CASCADE |                         |
+| excluded_date | date         | NOT NULL                                  | 제외할 일자 (날짜 단위) |
+| reason        | varchar(500) | NULL                                      |                         |
+| created_at    | timestamptz  | NOT NULL DEFAULT now()                    |                         |
 
 **제약**
+
 - UNIQUE (recurrence_id, excluded_date)
 
 **비고**
+
 - 사용자가 시리즈 중 특정 회차 삭제 시 추가
 - 동시에 해당 Booking 행도 소프트 삭제
 
@@ -404,24 +419,25 @@ CHECK (until_at <= start_at + interval '1 year')
 
 ### 3.10 ExceptionRequest — 관리자 예외 신청
 
-| 컬럼 | 타입 | 제약 | 설명 |
-|---|---|---|---|
-| id | uuid | PK | |
-| user_id | uuid | FK → User.id, ON DELETE RESTRICT | 신청자 |
-| room_id | uuid | FK → Room.id, ON DELETE RESTRICT | |
-| start_at | timestamptz | NOT NULL | |
-| end_at | timestamptz | NOT NULL | |
-| title | varchar(200) | NOT NULL | |
-| reason | text | NOT NULL | 신청 사유 (필수) |
-| status | enum | NOT NULL DEFAULT 'PENDING' | PENDING, APPROVED, REJECTED, CANCELLED |
-| reviewer_id | uuid | FK → User.id, NULL | 처리한 ADMIN |
-| review_comment | text | NULL | 반려 사유 등 |
-| reviewed_at | timestamptz | NULL | |
-| booking_id | uuid | FK → Booking.id, NULL | 승인 시 생성된 예약 |
-| created_at | timestamptz | NOT NULL DEFAULT now() | |
-| updated_at | timestamptz | NOT NULL DEFAULT now() | |
+| 컬럼           | 타입         | 제약                             | 설명                                   |
+| -------------- | ------------ | -------------------------------- | -------------------------------------- |
+| id             | uuid         | PK                               |                                        |
+| user_id        | uuid         | FK → User.id, ON DELETE RESTRICT | 신청자                                 |
+| room_id        | uuid         | FK → Room.id, ON DELETE RESTRICT |                                        |
+| start_at       | timestamptz  | NOT NULL                         |                                        |
+| end_at         | timestamptz  | NOT NULL                         |                                        |
+| title          | varchar(200) | NOT NULL                         |                                        |
+| reason         | text         | NOT NULL                         | 신청 사유 (필수)                       |
+| status         | enum         | NOT NULL DEFAULT 'PENDING'       | PENDING, APPROVED, REJECTED, CANCELLED |
+| reviewer_id    | uuid         | FK → User.id, NULL               | 처리한 ADMIN                           |
+| review_comment | text         | NULL                             | 반려 사유 등                           |
+| reviewed_at    | timestamptz  | NULL                             |                                        |
+| booking_id     | uuid         | FK → Booking.id, NULL            | 승인 시 생성된 예약                    |
+| created_at     | timestamptz  | NOT NULL DEFAULT now()           |                                        |
+| updated_at     | timestamptz  | NOT NULL DEFAULT now()           |                                        |
 
 **인덱스**
+
 - `idx_exception_request_status` (status, created_at) — 관리자 대기 목록
 - `idx_exception_request_user` (user_id, created_at DESC) — 내 신청 이력
 
@@ -429,22 +445,24 @@ CHECK (until_at <= start_at + interval '1 year')
 
 ### 3.11 AuditLog — 감사 로그
 
-| 컬럼 | 타입 | 제약 | 설명 |
-|---|---|---|---|
-| id | uuid | PK | |
-| actor_id | uuid | FK → User.id, NULL | 행위자 (시스템 작업 시 NULL) |
-| action | varchar(100) | NOT NULL | 예: BOOKING_CREATED, USER_ROLE_CHANGED |
-| target_type | varchar(50) | NOT NULL | 예: BOOKING, USER, ROOM |
-| target_id | uuid | NULL | |
-| payload | jsonb | NULL | 변경 전/후 또는 추가 컨텍스트 |
-| ip_address | inet | NULL | |
-| created_at | timestamptz | NOT NULL DEFAULT now() | |
+| 컬럼        | 타입         | 제약                   | 설명                                   |
+| ----------- | ------------ | ---------------------- | -------------------------------------- |
+| id          | uuid         | PK                     |                                        |
+| actor_id    | uuid         | FK → User.id, NULL     | 행위자 (시스템 작업 시 NULL)           |
+| action      | varchar(100) | NOT NULL               | 예: BOOKING_CREATED, USER_ROLE_CHANGED |
+| target_type | varchar(50)  | NOT NULL               | 예: BOOKING, USER, ROOM                |
+| target_id   | uuid         | NULL                   |                                        |
+| payload     | jsonb        | NULL                   | 변경 전/후 또는 추가 컨텍스트          |
+| ip_address  | inet         | NULL                   |                                        |
+| created_at  | timestamptz  | NOT NULL DEFAULT now() |                                        |
 
 **인덱스**
+
 - `idx_audit_log_target` (target_type, target_id, created_at DESC)
 - `idx_audit_log_actor` (actor_id, created_at DESC)
 
 **비고**
+
 - 영구 보관. 12개월 이상 된 로그는 별도 아카이브 테이블로 이관 검토
 - 권한 변경, 예외 승인/반려 등 민감 작업은 반드시 기록
 
@@ -555,21 +573,113 @@ CANCELLED  -- 신청자 취소
 
 ## 7. 데이터 정리 정책
 
-| 대상 | 주기 | 조건 |
-|---|---|---|
-| 미인증 User | 매시간 | `status='PENDING' AND created_at < now() - 24h` |
-| 만료된 EmailVerification | 매일 | `expires_at < now() - 7d` |
-| 만료된 RefreshToken | 매일 | `expires_at < now() - 30d` (revoke 이력 보존) |
-| LoginAttempt | 매주 | `attempted_at < now() - 90d` |
-| 만료된 PasswordReset | 매일 | `expires_at < now() - 7d` |
-| AuditLog | 영구 보관 | 12개월 이상은 아카이브 검토 |
+| 대상                     | 주기      | 조건                                            |
+| ------------------------ | --------- | ----------------------------------------------- |
+| 미인증 User              | 매시간    | `status='PENDING' AND created_at < now() - 24h` |
+| 만료된 EmailVerification | 매일      | `expires_at < now() - 7d`                       |
+| 만료된 RefreshToken      | 매일      | `expires_at < now() - 30d` (revoke 이력 보존)   |
+| LoginAttempt             | 매주      | `attempted_at < now() - 90d`                    |
+| 만료된 PasswordReset     | 매일      | `expires_at < now() - 7d`                       |
+| AuditLog                 | 영구 보관 | 12개월 이상은 아카이브 검토                     |
 
 구현은 NestJS `@Cron` 또는 `pg_cron` 확장 사용 검토.
 
 ---
 
-## 8. 변경 이력
+## 8. 부록 A. 회차 저장 전략 — Method A(미리 펼침) vs Method B(조회 시 펼침) 벤치마크
 
-| 버전 | 일자 | 작성자 | 변경 내용 |
-|---|---|---|---|
-| 1.0 | 2026-04-23 | 데릭 + Claude | 초기 작성 |
+**일자**: 2026-04-25
+**목적**: §3.8 "Booking 테이블에 미리 펼쳐서 저장" 결정의 정량 근거 확보
+**환경**: PostgreSQL 16 (docker compose), Node.js v24, `rrule@2.8.1`, btree_gist, 기 적용 마이그레이션 `20260423125356_add_constraints`
+**스크립트**: `apps/backend/scripts/expand-vs-rrule-bench.ts` (JS 측), 인라인 SQL (DB 측)
+
+### A.1 시나리오
+
+- 시리즈 10개, 각각 `FREQ=DAILY;COUNT=365` (1년 매일 반복) → Method A에선 booking 3,650행
+- 같은 회의실에 15분 슬롯 분산 (시리즈 1: 09:00-09:15, 시리즈 2: 09:15-09:30, …)
+- 측정 항목: 시리즈 생성, 캘린더 1주 조회, 시리즈 1개 수정
+- 데이터는 BEGIN/ROLLBACK으로 격리 (영속화 없음)
+
+### A.2 측정 결과
+
+#### A.2.1 시리즈 생성 비용
+
+| 작업                     | Method A      | Method B    | 비율 (A/B) |
+| ------------------------ | ------------- | ----------- | ---------- |
+| 10 RecurrenceRule INSERT | 4.23 ms       | 0.57 ms     | 7.4×       |
+| 3,650 Booking INSERT     | 194.52 ms     | —           | —          |
+| **합계**                 | **198.75 ms** | **0.57 ms** | **~349×**  |
+
+#### A.2.2 캘린더 1주 조회 (warm-up 1회 + 측정 5회 median)
+
+| 단계                                           | Method A     | Method B     |
+| ---------------------------------------------- | ------------ | ------------ |
+| SQL: 1주 booking SELECT                        | 0.43 ms      | —            |
+| SQL: 시리즈 SELECT (10건)                      | —            | 0.18 ms      |
+| JS: 10 시리즈 × `rrule.between` (200회 median) | —            | 0.18 ms      |
+| **응답 합계**                                  | **~0.43 ms** | **~0.36 ms** |
+| 결과 인스턴스 수                               | 70           | 70           |
+
+EXPLAIN (Method A):
+
+```text
+Index Scan using excl_booking_no_overlap on booking
+  (cost=0.14..8.17 rows=1 width=575) (actual time=0.008..0.255 rows=70)
+  Index Cond: (room_id = '<rid>')
+  Filter: ((start_at >= ...) AND (start_at < ...))
+  Rows Removed by Filter: 3581
+  Buffers: shared hit=576
+Planning Time: 0.042 ms / Execution Time: 0.265 ms
+```
+
+- GIST EXCLUDE 인덱스로 room_id 분기 + 시간 필터로 70/3,651행 추출.
+- 부분 인덱스 `idx_booking_active_room_time`은 본 데이터셋 규모에선 플래너가 GIST 인덱스를 선택했으나, 회의실 다수·행 수 증가 시 부분 인덱스가 더 자주 선택될 가능성 있음.
+
+#### A.2.3 시리즈 1개 수정
+
+| 작업            | Method A                      | Method B                           | 비율 (A/B) |
+| --------------- | ----------------------------- | ---------------------------------- | ---------- |
+| 1 시리즈 modify | UPDATE 365 booking → 19.84 ms | UPDATE 1 recurrence_rule → 0.23 ms | ~86×       |
+
+(참고: 만약 Method B에서 수정 후 1년 전체 재펼침이 필요한 경우 — JS 측 `rrule.all()` 50회 median **7.01 ms** 추가)
+
+### A.3 분석
+
+**Method B의 장점 (쓰기 압도적)**:
+
+1. 시리즈 생성: 약 350배 빠름.
+2. 시리즈 수정: 약 86배 빠름.
+3. DB 행 수 폭증 없음 (시리즈 N개 = 행 N개).
+
+**Method A의 장점 (운영/안전성)**:
+
+1. **DB 레벨 충돌 차단**: 모든 회차가 booking 행이므로 `excl_booking_no_overlap` EXCLUDE 제약이 회차 단위로 race-safe하게 작동 (→ 부록은 `docs/05-roadmap.md` Appendix A 참조). Method B는 회차가 행이 아니므로 EXCLUDE를 활용할 수 없고, 새 예약 시 애플리케이션 레벨에서 모든 시리즈를 펼쳐 in-memory 충돌 검사 필요 → 동시성 race 발생 시 빈틈 가능.
+2. **캘린더 조회 일관성**: 단일 예약과 반복 회차를 같은 booking 테이블에서 동일 SQL로 조회. Method B는 두 소스 (booking + 시리즈 펼침)를 머지해야 함.
+3. **개별 회차 수정/삭제 단순**: 회차당 booking 행 1개를 수정/소프트 삭제. Method B는 RecurrenceException 행 + 부분 매칭 + 메타데이터 수정 본체와 분리 관리 필요.
+4. **EXDATE/충돌 회차 추적 단순**: booking에 `recurrence_id`/`recurrence_index` 컬럼이 있어 시리즈 ↔ 회차 양방향 추적이 자연스러움.
+
+**규모 추정 (50명 × 1년)**:
+
+- 평균 시리즈 1인당 1개 (주간 회의 등) × 회차 수 평균 50 = 2,500행/년
+- 비반복 단일 예약 평균 1인당 50건/년 = 2,500행/년
+- 합계 약 5,000~10,000 booking 행/년 — PostgreSQL 인덱스 스캔으로 충분히 빠름. 행 수 폭증 우려 없음.
+
+### A.4 결론 — Method A 채택 근거
+
+쓰기 비용 차이(시리즈 생성 ~199ms, 수정 ~20ms)는 **사용자 인터랙션상 허용 범위**이며, 1년 절단 정책으로 회차 수가 제한되어 행 수 폭증 위험도 통제됨. 반면 Method A의 핵심 이점인 **EXCLUDE 제약을 통한 race-safe 충돌 차단**(`docs/05-roadmap.md` 부록 A에서 5개 케이스 검증 완료)은 Method B로는 동등 보장 불가.
+
+따라서 §3.8의 "회차를 booking에 미리 펼쳐 저장한다"는 결정은 유지한다.
+
+후속 액션:
+
+- 시리즈 수정 응답시간이 사용자 체감상 길게 느껴지는 임계 (>500ms)에 도달하면 부분 재계산 또는 비동기 처리 검토.
+- 회의실/시리즈 수가 현재 가정(1 회의실, 시리즈 ~10/년) 대비 한 자릿수 이상 증가하면 본 벤치마크 재실행.
+
+---
+
+## 9. 변경 이력
+
+| 버전 | 일자       | 작성자        | 변경 내용                                                      |
+| ---- | ---------- | ------------- | -------------------------------------------------------------- |
+| 1.0  | 2026-04-23 | 데릭 + Claude | 초기 작성                                                      |
+| 1.1  | 2026-04-25 | 데릭 + Claude | 부록 A. Method A vs B 벤치마크 결과 추가 + §3.8 채택 근거 강화 |

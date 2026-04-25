@@ -5,6 +5,7 @@ import { PrismaService } from '../../infra/prisma/prisma.service';
 
 import { BookingService } from './booking.service';
 import type { CreateBookingDto } from './dto/create-booking.dto';
+import { DeleteBookingScope } from './dto/delete-booking.query';
 
 const ROOM_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ROOM_ID = '22222222-2222-4222-8222-222222222222';
@@ -80,8 +81,13 @@ describe('BookingService', () => {
       findFirst: jest.Mock;
       create: jest.Mock;
       update: jest.Mock;
+      updateMany: jest.Mock;
     };
+    recurrenceRule: { update: jest.Mock; delete: jest.Mock };
+    recurrenceException: { create: jest.Mock };
     room: { findUnique: jest.Mock };
+    $queryRaw: jest.Mock;
+    $transaction: jest.Mock;
   };
 
   beforeAll(() => {
@@ -100,9 +106,22 @@ describe('BookingService', () => {
         findFirst: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn(),
       },
+      recurrenceRule: { update: jest.fn(), delete: jest.fn() },
+      recurrenceException: { create: jest.fn() },
       room: { findUnique: jest.fn() },
+      $queryRaw: jest.fn(),
+      $transaction: jest.fn(),
     };
+
+    // 콜백 형태는 동일 mock prisma로 즉시 실행, 배열 형태는 입력을 그대로 resolve.
+    prisma.$transaction.mockImplementation(async (arg: unknown) => {
+      if (typeof arg === 'function') {
+        return (arg as (tx: typeof prisma) => Promise<unknown>)(prisma);
+      }
+      return Array.isArray(arg) ? Promise.all(arg) : arg;
+    });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [BookingService, { provide: PrismaService, useValue: prisma }],
@@ -389,6 +408,172 @@ describe('BookingService', () => {
         response: expect.objectContaining({ code: 'BOOKING_TIME_PAST' }),
       });
     });
+
+    // -------------------------------------------------------------------------
+    // 반복 회차 자동 분리 — docs/03-api-spec.md §4.4
+    // -------------------------------------------------------------------------
+
+    describe('반복 회차 자동 분리', () => {
+      const RECURRENCE_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+
+      const buildRecurringInstance = (overrides: Partial<Booking> = {}): Booking =>
+        buildBooking({
+          recurrenceId: RECURRENCE_ID,
+          recurrenceIndex: 2,
+          ...overrides,
+        });
+
+      it('단일 예약(recurrenceId=null) 수정 시 분리 동작 없음 — 응답에 detachedFromSeries 없음', async () => {
+        prisma.booking.findFirst.mockResolvedValue(buildBooking({ recurrenceId: null }));
+        prisma.booking.update.mockResolvedValue(
+          buildBookingWithRelations({ recurrenceId: null, title: '변경' }),
+        );
+
+        const result = await service.update(BOOKING_ID, { title: '변경' }, userActor);
+
+        expect(result).not.toHaveProperty('detachedFromSeries');
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+        expect(prisma.recurrenceException.create).not.toHaveBeenCalled();
+      });
+
+      it('반복 회차 수정 시 booking 분리(recurrenceId/Index NULL) + EXDATE 추가 + detachedFromSeries:true', async () => {
+        prisma.booking.findFirst.mockResolvedValue(buildRecurringInstance());
+        prisma.booking.update.mockResolvedValue(
+          buildBookingWithRelations({
+            recurrenceId: null,
+            recurrenceIndex: null,
+            title: '변경',
+          }),
+        );
+        prisma.recurrenceException.create.mockResolvedValue({
+          id: 'exc',
+          recurrenceId: RECURRENCE_ID,
+          excludedDate: new Date('2026-04-24T15:00:00.000Z'),
+          reason: null,
+          createdAt: FIXED_NOW,
+        });
+
+        const result = await service.update(BOOKING_ID, { title: '변경' }, userActor);
+
+        // 트랜잭션 안에서 처리되었는지
+        expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+
+        // booking.update에 detach 데이터(recurrence.disconnect, recurrenceIndex:null) 포함
+        const updateArg = prisma.booking.update.mock.calls[0]?.[0] as {
+          data: { title?: string; recurrence?: unknown; recurrenceIndex?: number | null };
+        };
+        expect(updateArg.data.title).toBe('변경');
+        expect(updateArg.data.recurrence).toEqual({ disconnect: true });
+        expect(updateArg.data.recurrenceIndex).toBeNull();
+
+        // EXDATE는 KST 일자 기준으로 등록 (FUTURE_START=2026-04-25T05:00Z → KST 2026-04-25 → 2026-04-24T15:00Z)
+        const exArg = prisma.recurrenceException.create.mock.calls[0]?.[0] as {
+          data: { recurrenceId: string; excludedDate: Date; reason: null };
+        };
+        expect(exArg.data.recurrenceId).toBe(RECURRENCE_ID);
+        expect(exArg.data.excludedDate.toISOString()).toBe('2026-04-24T15:00:00.000Z');
+        expect(exArg.data.reason).toBeNull();
+
+        // 응답
+        expect(result.detachedFromSeries).toBe(true);
+        expect(result.recurrenceId).toBeNull();
+        expect(result.recurrenceIndex).toBeNull();
+        expect(result.title).toBe('변경');
+      });
+
+      it('이미 같은 일자에 EXDATE가 등록되어 있으면(P2002) 예외 무시 + booking 분리는 그대로 수행', async () => {
+        prisma.booking.findFirst.mockResolvedValue(buildRecurringInstance());
+
+        const dupErr = new Prisma.PrismaClientKnownRequestError('unique violation', {
+          code: 'P2002',
+          clientVersion: 'test',
+          meta: { target: ['recurrence_id', 'excluded_date'] },
+        });
+        prisma.recurrenceException.create.mockRejectedValue(dupErr);
+        // 트랜잭션 콜백은 EXDATE 시점에 throw — 이후 fallback update가 호출됨.
+        prisma.booking.update.mockResolvedValue(
+          buildBookingWithRelations({
+            recurrenceId: null,
+            recurrenceIndex: null,
+            title: '변경',
+          }),
+        );
+
+        const result = await service.update(BOOKING_ID, { title: '변경' }, userActor);
+
+        // booking.update는 트랜잭션 안 + fallback 두 번 호출됨 (마지막이 fallback)
+        expect(prisma.booking.update).toHaveBeenCalled();
+        const lastCall = prisma.booking.update.mock.calls.at(-1)?.[0] as {
+          data: { recurrence?: unknown; recurrenceIndex?: number | null };
+        };
+        expect(lastCall.data.recurrence).toEqual({ disconnect: true });
+        expect(lastCall.data.recurrenceIndex).toBeNull();
+
+        expect(result.detachedFromSeries).toBe(true);
+        expect(result.recurrenceId).toBeNull();
+      });
+
+      it('startAt 변경 + 반복 회차 → 새 startAt 적용되지만 EXDATE는 원래 startAt의 KST 일자 기준', async () => {
+        prisma.booking.findFirst.mockResolvedValue(buildRecurringInstance());
+
+        const newStart = new Date('2026-04-26T05:00:00.000Z');
+        const newEnd = new Date('2026-04-26T06:00:00.000Z');
+        prisma.booking.update.mockResolvedValue(
+          buildBookingWithRelations({
+            recurrenceId: null,
+            recurrenceIndex: null,
+            startAt: newStart,
+            endAt: newEnd,
+          }),
+        );
+        prisma.recurrenceException.create.mockResolvedValue({});
+
+        const result = await service.update(
+          BOOKING_ID,
+          { startAt: newStart.toISOString(), endAt: newEnd.toISOString() },
+          userActor,
+        );
+
+        // booking.update에는 새 시간이 들어감
+        const updateArg = prisma.booking.update.mock.calls[0]?.[0] as {
+          data: { startAt?: Date; endAt?: Date };
+        };
+        expect(updateArg.data.startAt?.toISOString()).toBe(newStart.toISOString());
+        expect(updateArg.data.endAt?.toISOString()).toBe(newEnd.toISOString());
+
+        // EXDATE는 *원래* startAt의 KST 일자 — 새 시간이 아님.
+        const exArg = prisma.recurrenceException.create.mock.calls[0]?.[0] as {
+          data: { excludedDate: Date };
+        };
+        expect(exArg.data.excludedDate.toISOString()).toBe('2026-04-24T15:00:00.000Z');
+
+        expect(result.detachedFromSeries).toBe(true);
+      });
+
+      it('EXCLUDE 충돌(23P01)이 분리 update 중 발생하면 BOOKING_TIME_CONFLICT로 매핑', async () => {
+        prisma.booking.findFirst.mockResolvedValue(buildRecurringInstance());
+
+        const conflictErr = new Prisma.PrismaClientKnownRequestError('exclude violation', {
+          code: 'P2010',
+          clientVersion: 'test',
+          meta: { code: '23P01' },
+        });
+        prisma.booking.update.mockRejectedValue(conflictErr);
+
+        await expect(
+          service.update(
+            BOOKING_ID,
+            {
+              startAt: '2026-04-25T07:00:00.000Z',
+              endAt: '2026-04-25T08:00:00.000Z',
+            },
+            userActor,
+          ),
+        ).rejects.toMatchObject({
+          response: expect.objectContaining({ code: 'BOOKING_TIME_CONFLICT' }),
+        });
+      });
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -441,6 +626,137 @@ describe('BookingService', () => {
       await service.softDelete(BOOKING_ID, adminActor);
 
       expect(prisma.booking.update).toHaveBeenCalled();
+    });
+
+    it('단일 예약(recurrenceId=null)은 scope=series여도 무시되고 단순 소프트 삭제', async () => {
+      prisma.booking.findFirst.mockResolvedValue(buildBooking({ recurrenceId: null }));
+      prisma.booking.update.mockResolvedValue(buildBooking({ deletedAt: FIXED_NOW }));
+
+      await service.softDelete(BOOKING_ID, userActor, DeleteBookingScope.SERIES);
+
+      expect(prisma.booking.update).toHaveBeenCalledWith({
+        where: { id: BOOKING_ID },
+        data: { deletedAt: expect.any(Date) },
+      });
+      // 시리즈 관련 호출은 발생하지 않아야 함
+      expect(prisma.booking.updateMany).not.toHaveBeenCalled();
+      expect(prisma.recurrenceRule.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // softDelete — 반복 예약 scope (instance / following / series)
+  // ---------------------------------------------------------------------------
+
+  describe('softDelete — 반복 회차 scope', () => {
+    const RECURRENCE_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+
+    const buildRecurringInstance = (overrides: Partial<Booking> = {}): Booking =>
+      buildBooking({
+        recurrenceId: RECURRENCE_ID,
+        recurrenceIndex: 2,
+        startAt: FUTURE_START,
+        endAt: FUTURE_END,
+        ...overrides,
+      });
+
+    describe('scope=instance (기본)', () => {
+      it('Booking 소프트 삭제 + RecurrenceException 추가 (트랜잭션)', async () => {
+        prisma.booking.findFirst.mockResolvedValue(buildRecurringInstance());
+        prisma.booking.update.mockResolvedValue(buildRecurringInstance({ deletedAt: FIXED_NOW }));
+        prisma.recurrenceException.create.mockResolvedValue({
+          id: 'exc',
+          recurrenceId: RECURRENCE_ID,
+          excludedDate: new Date('2026-04-24T15:00:00.000Z'),
+          reason: null,
+          createdAt: FIXED_NOW,
+        });
+
+        await service.softDelete(BOOKING_ID, userActor); // scope 기본값
+
+        expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+        expect(prisma.booking.update).toHaveBeenCalledWith({
+          where: { id: BOOKING_ID },
+          data: { deletedAt: expect.any(Date) },
+        });
+        // FUTURE_START = 2026-04-25T05:00Z (KST 14:00) → KST 일자 시작 = 2026-04-24T15:00Z
+        const exArg = prisma.recurrenceException.create.mock.calls[0]?.[0] as {
+          data: { recurrenceId: string; excludedDate: Date };
+        };
+        expect(exArg.data.recurrenceId).toBe(RECURRENCE_ID);
+        expect(exArg.data.excludedDate.toISOString()).toBe('2026-04-24T15:00:00.000Z');
+      });
+
+      it('이미 등록된 EXDATE(P2002) → 예외 무시하고 booking만 소프트 삭제', async () => {
+        prisma.booking.findFirst.mockResolvedValue(buildRecurringInstance());
+        const dupErr = new Prisma.PrismaClientKnownRequestError('unique violation', {
+          code: 'P2002',
+          clientVersion: 'test',
+          meta: { target: ['recurrence_id', 'excluded_date'] },
+        });
+        prisma.recurrenceException.create.mockRejectedValue(dupErr);
+        // 트랜잭션 콜백은 dup에서 throw — 이후 fallback update가 호출됨.
+        prisma.booking.update.mockResolvedValue(buildRecurringInstance({ deletedAt: FIXED_NOW }));
+
+        await service.softDelete(BOOKING_ID, userActor, DeleteBookingScope.INSTANCE);
+
+        // 1번째 update는 트랜잭션 안에서 호출되었지만 throw로 롤백 가정.
+        // 2번째 update는 catch 후 fallback.
+        expect(prisma.booking.update).toHaveBeenCalledWith({
+          where: { id: BOOKING_ID },
+          data: { deletedAt: expect.any(Date) },
+        });
+      });
+    });
+
+    describe('scope=following', () => {
+      it('이 회차부터 미래 회차 일괄 소프트 삭제 + 시리즈 untilAt 단축', async () => {
+        const inst = buildRecurringInstance();
+        prisma.booking.findFirst.mockResolvedValue(inst);
+        prisma.booking.updateMany.mockResolvedValue({ count: 5 });
+        prisma.recurrenceRule.update.mockResolvedValue({ id: RECURRENCE_ID });
+
+        await service.softDelete(BOOKING_ID, userActor, DeleteBookingScope.FOLLOWING);
+
+        expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+        expect(prisma.booking.updateMany).toHaveBeenCalledWith({
+          where: {
+            recurrenceId: RECURRENCE_ID,
+            startAt: { gte: inst.startAt },
+            deletedAt: null,
+          },
+          data: { deletedAt: expect.any(Date) },
+        });
+        expect(prisma.recurrenceRule.update).toHaveBeenCalledWith({
+          where: { id: RECURRENCE_ID },
+          data: { untilAt: inst.startAt },
+        });
+        // series 전체 삭제는 호출되지 않음
+        expect(prisma.recurrenceRule.delete).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('scope=series', () => {
+      it('미래 회차 일괄 소프트 삭제 + RecurrenceRule 하드 삭제', async () => {
+        prisma.booking.findFirst.mockResolvedValue(buildRecurringInstance());
+        prisma.booking.updateMany.mockResolvedValue({ count: 8 });
+        prisma.recurrenceRule.delete.mockResolvedValue({ id: RECURRENCE_ID });
+
+        await service.softDelete(BOOKING_ID, userActor, DeleteBookingScope.SERIES);
+
+        expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+        const updateManyArg = prisma.booking.updateMany.mock.calls[0]?.[0] as {
+          where: { recurrenceId: string; startAt: { gte: Date } };
+        };
+        expect(updateManyArg.where.recurrenceId).toBe(RECURRENCE_ID);
+        // gte는 NOW (= FIXED_NOW)
+        expect(updateManyArg.where.startAt.gte.toISOString()).toBe(FIXED_NOW.toISOString());
+        expect(prisma.recurrenceRule.delete).toHaveBeenCalledWith({
+          where: { id: RECURRENCE_ID },
+        });
+        // untilAt 단축은 발생하지 않음 (rule을 통째로 삭제)
+        expect(prisma.recurrenceRule.update).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -560,6 +876,111 @@ describe('BookingService', () => {
 
       const result = await service.findById(BOOKING_ID, userActor);
       expect(result.isMine).toBe(false);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // findConflictingInstanceIndices — 회차 일괄 충돌 검사 (반복 예약용)
+  // ---------------------------------------------------------------------------
+
+  describe('findConflictingInstanceIndices', () => {
+    /** 09:00 KST 기준으로 i주차 월요일 1시간짜리 인스턴스를 만든다. */
+    const weeklyInstance = (weekIdx: number): { startAt: Date; endAt: Date } => {
+      const start = new Date(FUTURE_START.getTime() + weekIdx * 7 * 24 * 60 * 60 * 1000);
+      const end = new Date(start.getTime() + 60 * 60 * 1000);
+      return { startAt: start, endAt: end };
+    };
+
+    it('빈 인스턴스 배열이면 DB 조회 없이 빈 배열 반환', async () => {
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, []);
+      expect(result).toEqual([]);
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('단일 인스턴스 — 충돌 없음 → []', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, [weeklyInstance(0)]);
+      expect(result).toEqual([]);
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it('단일 인스턴스 — 충돌 발생 → [0]', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ idx: 0 }]);
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, [weeklyInstance(0)]);
+      expect(result).toEqual([0]);
+    });
+
+    it('12개 회차 중 일부(0,5,11)만 충돌 → 해당 인덱스만 반환', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ idx: 0 }, { idx: 5 }, { idx: 11 }]);
+      const instances = Array.from({ length: 12 }, (_, i) => weeklyInstance(i));
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, instances);
+      expect(result).toEqual([0, 5, 11]);
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it('전 회차 충돌 → 모든 인덱스 반환', async () => {
+      const instances = Array.from({ length: 4 }, (_, i) => weeklyInstance(i));
+      prisma.$queryRaw.mockResolvedValue(instances.map((_, i) => ({ idx: i })));
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, instances);
+      expect(result).toEqual([0, 1, 2, 3]);
+    });
+
+    it('모든 회차 안전 → 빈 배열', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      const instances = Array.from({ length: 6 }, (_, i) => weeklyInstance(i));
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, instances);
+      expect(result).toEqual([]);
+    });
+
+    it('PostgreSQL이 BigInt로 반환해도 number로 정규화', async () => {
+      // 일부 드라이버 설정에서 int4가 BigInt로 도착하는 경우 방어.
+      prisma.$queryRaw.mockResolvedValue([{ idx: BigInt(2) }, { idx: BigInt(7) }]);
+      const instances = Array.from({ length: 8 }, (_, i) => weeklyInstance(i));
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, instances);
+      expect(result).toEqual([2, 7]);
+      // 반환 타입이 정확히 number인지 확인.
+      result.forEach((v) => expect(typeof v).toBe('number'));
+    });
+
+    it('SQL 단계에서 DISTINCT로 중복 제거되지만, 만약 같은 idx가 두 번 와도 호출자에게는 그대로 노출(레이어 책임 분리)', async () => {
+      // SQL 레벨에서 DISTINCT 보장하므로 보통 발생 X.
+      // 그러나 함수가 추가 dedup을 시도하지 않음을 명시(YAGNI).
+      prisma.$queryRaw.mockResolvedValue([{ idx: 1 }, { idx: 1 }, { idx: 3 }]);
+      const instances = Array.from({ length: 5 }, (_, i) => weeklyInstance(i));
+      const result = await service.findConflictingInstanceIndices(ROOM_ID, instances);
+      expect(result).toEqual([1, 1, 3]);
+    });
+
+    it('단일 쿼리만 실행 — N+1 회피 검증', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      const instances = Array.from({ length: 50 }, (_, i) => weeklyInstance(i));
+      await service.findConflictingInstanceIndices(ROOM_ID, instances);
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it('호출 시 SQL 객체에 입력 인스턴스 수 만큼의 VALUES 행이 포함됨', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      const instances = Array.from({ length: 3 }, (_, i) => weeklyInstance(i));
+      await service.findConflictingInstanceIndices(ROOM_ID, instances);
+
+      // Prisma.sql은 { strings, values } 형태의 Sql 객체로 평가됨.
+      const sqlArg = prisma.$queryRaw.mock.calls[0]?.[0] as {
+        values: unknown[];
+      };
+      // 파라미터는: roomId(1) + 인스턴스마다 startAt+endAt(2) = 1 + 3*2 = 7
+      expect(Array.isArray(sqlArg.values)).toBe(true);
+      expect(sqlArg.values).toContain(ROOM_ID);
+      expect(sqlArg.values).toEqual(
+        expect.arrayContaining([instances[0]!.startAt, instances[2]!.endAt]),
+      );
+    });
+
+    it('다른 roomId로 호출하면 해당 roomId가 SQL 파라미터로 전달됨', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      await service.findConflictingInstanceIndices(OTHER_ROOM_ID, [weeklyInstance(0)]);
+      const sqlArg = prisma.$queryRaw.mock.calls[0]?.[0] as { values: unknown[] };
+      expect(sqlArg.values).toContain(OTHER_ROOM_ID);
+      expect(sqlArg.values).not.toContain(ROOM_ID);
     });
   });
 });
