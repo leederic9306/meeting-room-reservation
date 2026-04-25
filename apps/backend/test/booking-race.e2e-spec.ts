@@ -76,16 +76,15 @@ describeOrSkip('Booking EXCLUDE race condition (real Postgres)', () => {
       ),
     );
 
-    const fulfilled = results.filter(
-      (r): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled',
-    );
-    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
 
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(N - 1);
 
     for (const r of rejected) {
-      expect(isExcludeViolation(r.reason)).toBe(true);
+      // filter narrows status, but TS retains the union type — assert at use site.
+      expect(isExcludeViolation((r as PromiseRejectedResult).reason)).toBe(true);
     }
   }, 60_000);
 
