@@ -1,8 +1,11 @@
-export default function HomePage(): JSX.Element {
-  return (
-    <main className="container flex min-h-screen flex-col items-center justify-center gap-4 py-16">
-      <h1 className="text-3xl font-bold text-primary">회의실 예약 시스템</h1>
-      <p className="text-muted-foreground">Phase 0 — 스캐폴딩 완료</p>
-    </main>
-  );
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
+
+// auth.store가 로그인 시 set, 로그아웃 시 unset하는 비민감 세션 마커.
+// middleware.ts의 보호 라우트 판단과 동일한 키.
+const SESSION_COOKIE = 'mr_session';
+
+export default function HomePage(): never {
+  const hasSession = Boolean(cookies().get(SESSION_COOKIE)?.value);
+  redirect(hasSession ? '/dashboard' : '/login');
 }

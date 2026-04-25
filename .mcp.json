@@ -20,12 +20,14 @@
 
     "filesystem": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "."
-      ],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
       "description": "프로젝트 파일 시스템 (현재 디렉토리)"
+    },
+
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"],
+      "description": "Playwright 브라우저 자동화 (E2E 수동 테스트용)"
     }
   }
 }
