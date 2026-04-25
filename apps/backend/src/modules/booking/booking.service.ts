@@ -11,6 +11,7 @@ import { PrismaService } from '../../infra/prisma/prisma.service';
 
 import { type BookingDto, type BookingWithRelations, toBookingDto } from './dto/booking.dto';
 import type { CreateBookingDto } from './dto/create-booking.dto';
+import { DeleteBookingScope } from './dto/delete-booking.query';
 import type { ListBookingsQuery } from './dto/list-bookings.query';
 import type { UpdateBookingDto } from './dto/update-booking.dto';
 
@@ -195,7 +196,21 @@ export class BookingService {
   // 삭제 (소프트)
   // ---------------------------------------------------------------------------
 
-  async softDelete(id: string, actor: ActorContext): Promise<void> {
+  /**
+   * 예약 삭제. docs/03-api-spec.md §4.5.
+   *
+   * `scope`는 반복 회차에서만 의미 있다. 단일 예약(`recurrenceId=null`)은 항상 단순
+   * 소프트 삭제로 처리된다.
+   *
+   * - INSTANCE (기본): 해당 회차만 소프트 삭제 + RecurrenceException 추가
+   * - FOLLOWING       : 이 회차부터 미래 모든 회차 소프트 삭제 + 시리즈 untilAt 단축
+   * - SERIES          : 시리즈 전체 삭제 (모든 미래 회차 + RecurrenceRule)
+   */
+  async softDelete(
+    id: string,
+    actor: ActorContext,
+    scope: DeleteBookingScope = DeleteBookingScope.INSTANCE,
+  ): Promise<void> {
     const existing = await this.prisma.booking.findFirst({
       where: { id, deletedAt: null },
     });
@@ -220,10 +235,86 @@ export class BookingService {
       });
     }
 
-    await this.prisma.booking.update({
-      where: { id },
-      data: { deletedAt: new Date() },
-    });
+    // 단일 예약: scope 값과 무관하게 단순 소프트 삭제.
+    if (existing.recurrenceId === null) {
+      await this.prisma.booking.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      });
+      return;
+    }
+
+    const recurrenceId = existing.recurrenceId;
+    const now = new Date();
+
+    if (scope === DeleteBookingScope.INSTANCE) {
+      // 해당 회차 소프트 삭제 + RecurrenceException 등록.
+      // excludedDate는 KST 일자(`startAt`을 KST 캘린더로 절단)로 저장.
+      const excludedDateUtc = kstDayStartUtc(existing.startAt);
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.booking.update({
+            where: { id },
+            data: { deletedAt: now },
+          });
+          await tx.recurrenceException.create({
+            data: {
+              recurrenceId,
+              excludedDate: excludedDateUtc,
+              reason: null,
+            },
+          });
+        });
+      } catch (error) {
+        // 이미 같은 일자에 RecurrenceException이 등록되어 있는 경우 — booking만 소프트 삭제.
+        // (회차의 일자별 EXDATE는 unique 제약이므로 P2002 가능)
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+          await this.prisma.booking.update({
+            where: { id },
+            data: { deletedAt: now },
+          });
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+
+    if (scope === DeleteBookingScope.FOLLOWING) {
+      // 이 회차 startAt 이상의 미래 회차들을 소프트 삭제 + 시리즈 untilAt을 직전으로 단축.
+      const cutoff = existing.startAt;
+      await this.prisma.$transaction([
+        this.prisma.booking.updateMany({
+          where: {
+            recurrenceId,
+            startAt: { gte: cutoff },
+            deletedAt: null,
+          },
+          data: { deletedAt: now },
+        }),
+        // untilAt = cutoff (이 회차 직전까지 유효). 회차의 endAt이 아닌 startAt을 사용 —
+        // "이 회차부터 미래"를 잘라낸 의미를 그대로 표현.
+        this.prisma.recurrenceRule.update({
+          where: { id: recurrenceId },
+          data: { untilAt: cutoff },
+        }),
+      ]);
+      return;
+    }
+
+    // SERIES: 미래 회차 소프트 삭제 + RecurrenceRule 하드 삭제.
+    // 과거 회차는 감사/회고 목적으로 유지 (FK onDelete: SetNull로 recurrenceId만 떨어짐).
+    await this.prisma.$transaction([
+      this.prisma.booking.updateMany({
+        where: {
+          recurrenceId,
+          startAt: { gte: now },
+          deletedAt: null,
+        },
+        data: { deletedAt: now },
+      }),
+      this.prisma.recurrenceRule.delete({ where: { id: recurrenceId } }),
+    ]);
   }
 
   // ---------------------------------------------------------------------------
@@ -383,4 +474,18 @@ function isExcludeConflictError(error: unknown): boolean {
     if (meta?.code === '23P01') return true;
   }
   return false;
+}
+
+/**
+ * 임의의 UTC instant를 KST 캘린더상 같은 일자의 00:00 KST에 해당하는 UTC instant로 변환.
+ * 예: 2026-04-27T00:00:00Z (KST 09:00) → 2026-04-26T15:00:00Z (KST 00:00)
+ *
+ * RecurrenceException.excludedDate(DATE 컬럼) 저장 시 사용 — 시간 부분은 DB에서 잘리지만
+ * 명시적 경계로 변환해 컬럼간 의도 일관성을 유지한다.
+ */
+function kstDayStartUtc(instant: Date): Date {
+  const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+  const kstMs = instant.getTime() + KST_OFFSET_MS;
+  const kstDayStartMs = Math.floor(kstMs / (24 * 60 * 60 * 1000)) * (24 * 60 * 60 * 1000);
+  return new Date(kstDayStartMs - KST_OFFSET_MS);
 }

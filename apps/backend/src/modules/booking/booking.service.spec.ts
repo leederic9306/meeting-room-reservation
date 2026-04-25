@@ -5,6 +5,7 @@ import { PrismaService } from '../../infra/prisma/prisma.service';
 
 import { BookingService } from './booking.service';
 import type { CreateBookingDto } from './dto/create-booking.dto';
+import { DeleteBookingScope } from './dto/delete-booking.query';
 
 const ROOM_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ROOM_ID = '22222222-2222-4222-8222-222222222222';
@@ -80,9 +81,13 @@ describe('BookingService', () => {
       findFirst: jest.Mock;
       create: jest.Mock;
       update: jest.Mock;
+      updateMany: jest.Mock;
     };
+    recurrenceRule: { update: jest.Mock; delete: jest.Mock };
+    recurrenceException: { create: jest.Mock };
     room: { findUnique: jest.Mock };
     $queryRaw: jest.Mock;
+    $transaction: jest.Mock;
   };
 
   beforeAll(() => {
@@ -101,10 +106,22 @@ describe('BookingService', () => {
         findFirst: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn(),
       },
+      recurrenceRule: { update: jest.fn(), delete: jest.fn() },
+      recurrenceException: { create: jest.fn() },
       room: { findUnique: jest.fn() },
       $queryRaw: jest.fn(),
+      $transaction: jest.fn(),
     };
+
+    // 콜백 형태는 동일 mock prisma로 즉시 실행, 배열 형태는 입력을 그대로 resolve.
+    prisma.$transaction.mockImplementation(async (arg: unknown) => {
+      if (typeof arg === 'function') {
+        return (arg as (tx: typeof prisma) => Promise<unknown>)(prisma);
+      }
+      return Array.isArray(arg) ? Promise.all(arg) : arg;
+    });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [BookingService, { provide: PrismaService, useValue: prisma }],
@@ -443,6 +460,137 @@ describe('BookingService', () => {
       await service.softDelete(BOOKING_ID, adminActor);
 
       expect(prisma.booking.update).toHaveBeenCalled();
+    });
+
+    it('단일 예약(recurrenceId=null)은 scope=series여도 무시되고 단순 소프트 삭제', async () => {
+      prisma.booking.findFirst.mockResolvedValue(buildBooking({ recurrenceId: null }));
+      prisma.booking.update.mockResolvedValue(buildBooking({ deletedAt: FIXED_NOW }));
+
+      await service.softDelete(BOOKING_ID, userActor, DeleteBookingScope.SERIES);
+
+      expect(prisma.booking.update).toHaveBeenCalledWith({
+        where: { id: BOOKING_ID },
+        data: { deletedAt: expect.any(Date) },
+      });
+      // 시리즈 관련 호출은 발생하지 않아야 함
+      expect(prisma.booking.updateMany).not.toHaveBeenCalled();
+      expect(prisma.recurrenceRule.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // softDelete — 반복 예약 scope (instance / following / series)
+  // ---------------------------------------------------------------------------
+
+  describe('softDelete — 반복 회차 scope', () => {
+    const RECURRENCE_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+
+    const buildRecurringInstance = (overrides: Partial<Booking> = {}): Booking =>
+      buildBooking({
+        recurrenceId: RECURRENCE_ID,
+        recurrenceIndex: 2,
+        startAt: FUTURE_START,
+        endAt: FUTURE_END,
+        ...overrides,
+      });
+
+    describe('scope=instance (기본)', () => {
+      it('Booking 소프트 삭제 + RecurrenceException 추가 (트랜잭션)', async () => {
+        prisma.booking.findFirst.mockResolvedValue(buildRecurringInstance());
+        prisma.booking.update.mockResolvedValue(buildRecurringInstance({ deletedAt: FIXED_NOW }));
+        prisma.recurrenceException.create.mockResolvedValue({
+          id: 'exc',
+          recurrenceId: RECURRENCE_ID,
+          excludedDate: new Date('2026-04-24T15:00:00.000Z'),
+          reason: null,
+          createdAt: FIXED_NOW,
+        });
+
+        await service.softDelete(BOOKING_ID, userActor); // scope 기본값
+
+        expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+        expect(prisma.booking.update).toHaveBeenCalledWith({
+          where: { id: BOOKING_ID },
+          data: { deletedAt: expect.any(Date) },
+        });
+        // FUTURE_START = 2026-04-25T05:00Z (KST 14:00) → KST 일자 시작 = 2026-04-24T15:00Z
+        const exArg = prisma.recurrenceException.create.mock.calls[0]?.[0] as {
+          data: { recurrenceId: string; excludedDate: Date };
+        };
+        expect(exArg.data.recurrenceId).toBe(RECURRENCE_ID);
+        expect(exArg.data.excludedDate.toISOString()).toBe('2026-04-24T15:00:00.000Z');
+      });
+
+      it('이미 등록된 EXDATE(P2002) → 예외 무시하고 booking만 소프트 삭제', async () => {
+        prisma.booking.findFirst.mockResolvedValue(buildRecurringInstance());
+        const dupErr = new Prisma.PrismaClientKnownRequestError('unique violation', {
+          code: 'P2002',
+          clientVersion: 'test',
+          meta: { target: ['recurrence_id', 'excluded_date'] },
+        });
+        prisma.recurrenceException.create.mockRejectedValue(dupErr);
+        // 트랜잭션 콜백은 dup에서 throw — 이후 fallback update가 호출됨.
+        prisma.booking.update.mockResolvedValue(buildRecurringInstance({ deletedAt: FIXED_NOW }));
+
+        await service.softDelete(BOOKING_ID, userActor, DeleteBookingScope.INSTANCE);
+
+        // 1번째 update는 트랜잭션 안에서 호출되었지만 throw로 롤백 가정.
+        // 2번째 update는 catch 후 fallback.
+        expect(prisma.booking.update).toHaveBeenCalledWith({
+          where: { id: BOOKING_ID },
+          data: { deletedAt: expect.any(Date) },
+        });
+      });
+    });
+
+    describe('scope=following', () => {
+      it('이 회차부터 미래 회차 일괄 소프트 삭제 + 시리즈 untilAt 단축', async () => {
+        const inst = buildRecurringInstance();
+        prisma.booking.findFirst.mockResolvedValue(inst);
+        prisma.booking.updateMany.mockResolvedValue({ count: 5 });
+        prisma.recurrenceRule.update.mockResolvedValue({ id: RECURRENCE_ID });
+
+        await service.softDelete(BOOKING_ID, userActor, DeleteBookingScope.FOLLOWING);
+
+        expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+        expect(prisma.booking.updateMany).toHaveBeenCalledWith({
+          where: {
+            recurrenceId: RECURRENCE_ID,
+            startAt: { gte: inst.startAt },
+            deletedAt: null,
+          },
+          data: { deletedAt: expect.any(Date) },
+        });
+        expect(prisma.recurrenceRule.update).toHaveBeenCalledWith({
+          where: { id: RECURRENCE_ID },
+          data: { untilAt: inst.startAt },
+        });
+        // series 전체 삭제는 호출되지 않음
+        expect(prisma.recurrenceRule.delete).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('scope=series', () => {
+      it('미래 회차 일괄 소프트 삭제 + RecurrenceRule 하드 삭제', async () => {
+        prisma.booking.findFirst.mockResolvedValue(buildRecurringInstance());
+        prisma.booking.updateMany.mockResolvedValue({ count: 8 });
+        prisma.recurrenceRule.delete.mockResolvedValue({ id: RECURRENCE_ID });
+
+        await service.softDelete(BOOKING_ID, userActor, DeleteBookingScope.SERIES);
+
+        expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+        const updateManyArg = prisma.booking.updateMany.mock.calls[0]?.[0] as {
+          where: { recurrenceId: string; startAt: { gte: Date } };
+        };
+        expect(updateManyArg.where.recurrenceId).toBe(RECURRENCE_ID);
+        // gte는 NOW (= FIXED_NOW)
+        expect(updateManyArg.where.startAt.gte.toISOString()).toBe(FIXED_NOW.toISOString());
+        expect(prisma.recurrenceRule.delete).toHaveBeenCalledWith({
+          where: { id: RECURRENCE_ID },
+        });
+        // untilAt 단축은 발생하지 않음 (rule을 통째로 삭제)
+        expect(prisma.recurrenceRule.update).not.toHaveBeenCalled();
+      });
     });
   });
 

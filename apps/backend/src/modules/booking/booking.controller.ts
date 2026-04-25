@@ -20,6 +20,7 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 import { BookingService } from './booking.service';
 import type { BookingDto } from './dto/booking.dto';
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { DeleteBookingQuery } from './dto/delete-booking.query';
 import { ListBookingsQuery } from './dto/list-bookings.query';
 import { UpdateBookingDto } from './dto/update-booking.dto';
 
@@ -58,7 +59,11 @@ export class BookingController {
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  remove(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string): Promise<void> {
-    return this.bookingService.softDelete(id, { id: user.id, role: user.role });
+  remove(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: DeleteBookingQuery,
+  ): Promise<void> {
+    return this.bookingService.softDelete(id, { id: user.id, role: user.role }, query.scope);
   }
 }
