@@ -5,6 +5,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { validateEnv } from './config/env.validation';
 import { MailModule } from './infra/mail/mail.module';
 import { PrismaModule } from './infra/prisma/prisma.module';
+import { AuditLogModule } from './modules/audit-log/audit-log.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BookingModule } from './modules/booking/booking.module';
 import { ExceptionRequestModule } from './modules/exception-request/exception-request.module';
@@ -25,6 +26,7 @@ import { UserModule } from './modules/user/user.module';
     ScheduleModule.forRoot(),
     PrismaModule,
     MailModule,
+    AuditLogModule,
     AuthModule,
     HealthModule,
     RoomModule,

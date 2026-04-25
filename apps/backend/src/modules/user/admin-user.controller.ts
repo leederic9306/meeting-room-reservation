@@ -2,20 +2,26 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
+  Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import type { AuthUser } from '../../common/types/auth-user.type';
 
 import type { AdminUserDto } from './dto/admin-user.dto';
 import { ListUsersQuery } from './dto/list-users.query';
+import { LockUserDto } from './dto/lock-user.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { type PaginatedUsers, UserService } from './user.service';
 
@@ -41,9 +47,29 @@ export class AdminUserController {
 
   @Patch(':id/role')
   updateRole(
+    @CurrentUser() actor: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateRoleDto,
   ): Promise<AdminUserDto> {
-    return this.userService.updateRole(id, dto.role);
+    return this.userService.updateRole(id, dto.role, actor.id);
+  }
+
+  @Post(':id/lock')
+  @HttpCode(HttpStatus.OK)
+  lock(
+    @CurrentUser() actor: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: LockUserDto,
+  ): Promise<AdminUserDto> {
+    return this.userService.lockUser(id, actor.id, dto.reason);
+  }
+
+  @Post(':id/unlock')
+  @HttpCode(HttpStatus.OK)
+  unlock(
+    @CurrentUser() actor: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<AdminUserDto> {
+    return this.userService.unlockUser(id, actor.id);
   }
 }

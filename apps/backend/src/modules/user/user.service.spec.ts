@@ -3,8 +3,11 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { UserRole, UserStatus, type User } from '@prisma/client';
 
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 import { UserService } from './user.service';
+
+const ADMIN_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 const buildUser = (overrides: Partial<User> = {}): User => ({
   id: '11111111-1111-4111-8111-111111111111',
@@ -30,12 +33,14 @@ describe('UserService', () => {
   let userCount: jest.Mock;
   let userUpdate: jest.Mock;
   let prismaTransaction: jest.Mock;
+  let auditLogRecord: jest.Mock;
 
   beforeEach(async () => {
     userFindMany = jest.fn();
     userFindUnique = jest.fn();
     userCount = jest.fn();
     userUpdate = jest.fn();
+    auditLogRecord = jest.fn().mockResolvedValue(undefined);
     // $transaction([...]) → 두 인자가 thenable이라 가정, 입력 배열을 그대로 Promise.all 처럼 처리.
     prismaTransaction = jest.fn(async (ops: unknown) => {
       if (Array.isArray(ops)) return Promise.all(ops);
@@ -57,6 +62,7 @@ describe('UserService', () => {
             $transaction: prismaTransaction,
           },
         },
+        { provide: AuditLogService, useValue: { record: auditLogRecord } },
       ],
     }).compile();
 
@@ -161,10 +167,19 @@ describe('UserService', () => {
       const result = await service.updateRole(
         '11111111-1111-4111-8111-111111111111',
         UserRole.ADMIN,
+        ADMIN_ID,
       );
 
       expect(userCount).not.toHaveBeenCalled();
       expect(result.role).toBe(UserRole.ADMIN);
+      expect(auditLogRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'USER_ROLE_CHANGED',
+          targetType: 'USER',
+          actorId: ADMIN_ID,
+          payload: expect.objectContaining({ before: 'USER', after: 'ADMIN' }),
+        }),
+      );
     });
 
     it('마지막 ACTIVE ADMIN 강등은 LAST_ADMIN_PROTECTION', async () => {
@@ -174,12 +189,13 @@ describe('UserService', () => {
       userCount.mockResolvedValue(1);
 
       await expect(
-        service.updateRole('11111111-1111-4111-8111-111111111111', UserRole.USER),
+        service.updateRole('11111111-1111-4111-8111-111111111111', UserRole.USER, ADMIN_ID),
       ).rejects.toMatchObject({
         constructor: ConflictException,
         response: expect.objectContaining({ code: 'LAST_ADMIN_PROTECTION' }),
       });
       expect(userUpdate).not.toHaveBeenCalled();
+      expect(auditLogRecord).not.toHaveBeenCalled();
     });
 
     it('ACTIVE ADMIN이 둘 이상이면 강등 허용', async () => {
@@ -192,6 +208,7 @@ describe('UserService', () => {
       const result = await service.updateRole(
         '11111111-1111-4111-8111-111111111111',
         UserRole.USER,
+        ADMIN_ID,
       );
 
       expect(result.role).toBe(UserRole.USER);
@@ -208,21 +225,24 @@ describe('UserService', () => {
       const result = await service.updateRole(
         '11111111-1111-4111-8111-111111111111',
         UserRole.USER,
+        ADMIN_ID,
       );
 
       expect(result.role).toBe(UserRole.USER);
     });
 
-    it('동일 역할 지정은 no-op으로 통과 (DB update 호출 없음)', async () => {
+    it('동일 역할 지정은 no-op으로 통과 (DB update 호출 없음, AuditLog 도 미발생)', async () => {
       userFindUnique.mockResolvedValue(buildUser({ role: UserRole.ADMIN }));
 
       const result = await service.updateRole(
         '11111111-1111-4111-8111-111111111111',
         UserRole.ADMIN,
+        ADMIN_ID,
       );
 
       expect(userCount).not.toHaveBeenCalled();
       expect(userUpdate).not.toHaveBeenCalled();
+      expect(auditLogRecord).not.toHaveBeenCalled();
       expect(result.role).toBe(UserRole.ADMIN);
     });
 
@@ -230,10 +250,102 @@ describe('UserService', () => {
       userFindUnique.mockResolvedValue(null);
 
       await expect(
-        service.updateRole('11111111-1111-4111-8111-111111111111', UserRole.ADMIN),
+        service.updateRole('11111111-1111-4111-8111-111111111111', UserRole.ADMIN, ADMIN_ID),
       ).rejects.toMatchObject({
         constructor: NotFoundException,
         response: expect.objectContaining({ code: 'USER_NOT_FOUND' }),
+      });
+    });
+  });
+
+  describe('lockUser', () => {
+    it('ACTIVE 사용자 → LOCKED 으로 변경 + AuditLog 기록', async () => {
+      userFindUnique.mockResolvedValue(buildUser({ status: UserStatus.ACTIVE }));
+      userUpdate.mockResolvedValue(buildUser({ status: UserStatus.LOCKED }));
+
+      const result = await service.lockUser(
+        '11111111-1111-4111-8111-111111111111',
+        ADMIN_ID,
+        '권한 남용',
+      );
+
+      expect(userUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ status: UserStatus.LOCKED }),
+        }),
+      );
+      expect(auditLogRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'USER_LOCKED',
+          targetType: 'USER',
+          actorId: ADMIN_ID,
+          payload: expect.objectContaining({ reason: '권한 남용' }),
+        }),
+      );
+      expect(result.status).toBe(UserStatus.LOCKED);
+    });
+
+    it('이미 LOCKED 면 USER_ALREADY_LOCKED', async () => {
+      userFindUnique.mockResolvedValue(buildUser({ status: UserStatus.LOCKED }));
+
+      await expect(
+        service.lockUser('11111111-1111-4111-8111-111111111111', ADMIN_ID),
+      ).rejects.toMatchObject({
+        constructor: ConflictException,
+        response: expect.objectContaining({ code: 'USER_ALREADY_LOCKED' }),
+      });
+      expect(userUpdate).not.toHaveBeenCalled();
+    });
+
+    it('마지막 ACTIVE ADMIN 잠금은 LAST_ADMIN_PROTECTION', async () => {
+      userFindUnique.mockResolvedValue(
+        buildUser({ role: UserRole.ADMIN, status: UserStatus.ACTIVE }),
+      );
+      userCount.mockResolvedValue(1);
+
+      await expect(
+        service.lockUser('11111111-1111-4111-8111-111111111111', ADMIN_ID),
+      ).rejects.toMatchObject({
+        constructor: ConflictException,
+        response: expect.objectContaining({ code: 'LAST_ADMIN_PROTECTION' }),
+      });
+    });
+
+    it('없는 사용자면 USER_NOT_FOUND', async () => {
+      userFindUnique.mockResolvedValue(null);
+      await expect(
+        service.lockUser('11111111-1111-4111-8111-111111111111', ADMIN_ID),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'USER_NOT_FOUND' }),
+      });
+    });
+  });
+
+  describe('unlockUser', () => {
+    it('LOCKED → ACTIVE 변경 + AuditLog 기록', async () => {
+      userFindUnique.mockResolvedValue(buildUser({ status: UserStatus.LOCKED }));
+      userUpdate.mockResolvedValue(buildUser({ status: UserStatus.ACTIVE }));
+
+      const result = await service.unlockUser('11111111-1111-4111-8111-111111111111', ADMIN_ID);
+
+      expect(userUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ status: UserStatus.ACTIVE, lockedUntil: null }),
+        }),
+      );
+      expect(auditLogRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'USER_UNLOCKED', actorId: ADMIN_ID }),
+      );
+      expect(result.status).toBe(UserStatus.ACTIVE);
+    });
+
+    it('LOCKED 가 아니면 USER_NOT_LOCKED', async () => {
+      userFindUnique.mockResolvedValue(buildUser({ status: UserStatus.ACTIVE }));
+      await expect(
+        service.unlockUser('11111111-1111-4111-8111-111111111111', ADMIN_ID),
+      ).rejects.toMatchObject({
+        constructor: ConflictException,
+        response: expect.objectContaining({ code: 'USER_NOT_LOCKED' }),
       });
     });
   });

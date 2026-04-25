@@ -47,20 +47,24 @@ export class RoomController {
   @Post()
   @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.CREATED)
-  create(@Body() dto: CreateRoomDto): Promise<RoomDto> {
-    return this.roomService.create(dto);
+  create(@CurrentUser() actor: AuthUser, @Body() dto: CreateRoomDto): Promise<RoomDto> {
+    return this.roomService.create(dto, actor.id);
   }
 
   @Patch(':id')
   @Roles(UserRole.ADMIN)
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateRoomDto): Promise<RoomDto> {
-    return this.roomService.update(id, dto);
+  update(
+    @CurrentUser() actor: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateRoomDto,
+  ): Promise<RoomDto> {
+    return this.roomService.update(id, dto, actor.id);
   }
 
   @Delete(':id')
   @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.NO_CONTENT)
-  remove(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
-    return this.roomService.remove(id);
+  remove(@CurrentUser() actor: AuthUser, @Param('id', ParseUUIDPipe) id: string): Promise<void> {
+    return this.roomService.remove(id, actor.id);
   }
 }
