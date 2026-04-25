@@ -35,6 +35,9 @@ export function AppHeader(): JSX.Element {
           회의실 예약
         </Link>
         <div className="flex items-center gap-3">
+          <Link href="/my/requests" className="text-sm font-medium text-primary hover:underline">
+            내 신청
+          </Link>
           {user?.role === 'ADMIN' ? (
             <Link href="/admin/rooms" className="text-sm font-medium text-primary hover:underline">
               관리자 페이지

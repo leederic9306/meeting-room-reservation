@@ -20,6 +20,7 @@ import {
   type CreateBookingInput,
   type RoomDto,
 } from '@/lib/api/bookings';
+import { shouldOfferExceptionRequest } from '@/lib/api/exception-requests';
 import {
   createRecurrence,
   previewRecurrenceStarts,
@@ -35,6 +36,7 @@ import { cn } from '@/lib/utils';
 import { formatKstDateTime, formatKstTimeRange } from '@/lib/utils/datetime';
 
 import { DateTimeQuarterPicker } from './DateTimeQuarterPicker';
+import { ExceptionRequestModal } from './ExceptionRequestModal';
 
 interface Props {
   open: boolean;
@@ -78,6 +80,16 @@ export function CreateBookingModal({
 }: Props): JSX.Element {
   const queryClient = useQueryClient();
   const [conflictResult, setConflictResult] = useState<CreateRecurrenceResultDto | undefined>();
+  const [exceptionPreset, setExceptionPreset] = useState<
+    | {
+        roomId: string;
+        title: string;
+        startAt: string;
+        endAt: string;
+        roomName?: string;
+      }
+    | undefined
+  >();
 
   const roomsQuery = useQuery<RoomDto[]>({
     queryKey: ['rooms'],
@@ -122,11 +134,22 @@ export function CreateBookingModal({
       recurrence: { enabled: false },
     });
     setConflictResult(undefined);
+    setExceptionPreset(undefined);
   }, [open, initialStart, initialEnd, defaultRoomId, reset]);
 
   const recurrence = watch('recurrence');
   const startAtValue = watch('booking.startAt');
   const endAtValue = watch('booking.endAt');
+  const titleValue = watch('booking.title');
+  const roomIdValue = watch('booking.roomId');
+
+  // 4시간 초과/과거 시점이면 일반 예약 불가 — 예외 신청 CTA 노출 조건.
+  // 반복 예약 토글이 켜진 경우는 비활성(반복 시리즈는 회차당 길이로 검증되며 흐름이 다름).
+  const offerException = useMemo(() => {
+    if (recurrence.enabled) return false;
+    if (!startAtValue || !endAtValue) return false;
+    return shouldOfferExceptionRequest(startAtValue, endAtValue);
+  }, [recurrence.enabled, startAtValue, endAtValue]);
 
   // 미리보기 — 첫 회차 시작 + 주기로 처음 N개 추정 (BYDAY 등 미지원, 단순 프리셋 한정).
   const previewItems = useMemo(() => {
@@ -322,16 +345,59 @@ export function CreateBookingModal({
             recurrenceEndType={recurrence.endType}
           />
 
+          {offerException ? (
+            <div
+              role="status"
+              className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+            >
+              <p className="font-medium">일반 예약으로는 신청할 수 없는 시간입니다.</p>
+              <p className="mt-1 text-xs">
+                4시간을 초과하거나 과거 시점인 경우 관리자 승인이 필요한 예외 신청을 이용해 주세요.
+              </p>
+              <div className="mt-3 flex justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!roomIdValue || !titleValue}
+                  onClick={() => {
+                    const roomName = activeRooms.find((r) => r.id === roomIdValue)?.name;
+                    setExceptionPreset({
+                      roomId: roomIdValue,
+                      title: titleValue,
+                      startAt: startAtValue,
+                      endAt: endAtValue,
+                      roomName,
+                    });
+                  }}
+                >
+                  예외 신청
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={onClose} disabled={isPending}>
               취소
             </Button>
-            <Button type="submit" disabled={isPending || activeRooms.length === 0}>
+            <Button
+              type="submit"
+              disabled={isPending || activeRooms.length === 0 || offerException}
+            >
               {isPending ? '저장 중...' : recurrence.enabled ? '반복 예약하기' : '예약하기'}
             </Button>
           </div>
         </form>
       </Modal>
+
+      {exceptionPreset ? (
+        <ExceptionRequestModal
+          open
+          preset={exceptionPreset}
+          onClose={() => setExceptionPreset(undefined)}
+        />
+      ) : null}
 
       {conflictResult ? (
         <ConflictResultModal

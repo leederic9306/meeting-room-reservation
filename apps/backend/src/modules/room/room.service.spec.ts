@@ -3,8 +3,11 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { Prisma, UserRole, type Room } from '@prisma/client';
 
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 import { RoomService } from './room.service';
+
+const ACTOR_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 const buildRoom = (overrides: Partial<Room> = {}): Room => ({
   id: '11111111-1111-4111-8111-111111111111',
@@ -28,6 +31,7 @@ describe('RoomService', () => {
   let roomUpdate: jest.Mock;
   let roomDelete: jest.Mock;
   let bookingCount: jest.Mock;
+  let auditLogRecord: jest.Mock;
 
   beforeEach(async () => {
     roomFindMany = jest.fn();
@@ -37,6 +41,7 @@ describe('RoomService', () => {
     roomUpdate = jest.fn();
     roomDelete = jest.fn();
     bookingCount = jest.fn();
+    auditLogRecord = jest.fn().mockResolvedValue(undefined);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -55,6 +60,7 @@ describe('RoomService', () => {
             booking: { count: bookingCount },
           },
         },
+        { provide: AuditLogService, useValue: { record: auditLogRecord } },
       ],
     }).compile();
 
@@ -151,7 +157,7 @@ describe('RoomService', () => {
       roomCount.mockResolvedValue(3);
       roomCreate.mockResolvedValue(buildRoom({ name: '회의실 신규' }));
 
-      const result = await service.create({ name: '회의실 신규', capacity: 10 });
+      const result = await service.create({ name: '회의실 신규', capacity: 10 }, ACTOR_ID);
 
       expect(roomCreate).toHaveBeenCalledWith({
         data: {
@@ -163,16 +169,24 @@ describe('RoomService', () => {
         },
       });
       expect(result.name).toBe('회의실 신규');
+      expect(auditLogRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'ROOM_CREATED',
+          targetType: 'ROOM',
+          actorId: ACTOR_ID,
+        }),
+      );
     });
 
     it('이미 10개 등록되어 있으면 ROOM_LIMIT_EXCEEDED', async () => {
       roomCount.mockResolvedValue(10);
 
-      await expect(service.create({ name: '11번째' })).rejects.toMatchObject({
+      await expect(service.create({ name: '11번째' }, ACTOR_ID)).rejects.toMatchObject({
         constructor: ConflictException,
         response: expect.objectContaining({ code: 'ROOM_LIMIT_EXCEEDED' }),
       });
       expect(roomCreate).not.toHaveBeenCalled();
+      expect(auditLogRecord).not.toHaveBeenCalled();
     });
 
     it('이름이 중복(P2002)이면 ROOM_NAME_DUPLICATE', async () => {
@@ -185,17 +199,18 @@ describe('RoomService', () => {
         }),
       );
 
-      await expect(service.create({ name: '회의실 A' })).rejects.toMatchObject({
+      await expect(service.create({ name: '회의실 A' }, ACTOR_ID)).rejects.toMatchObject({
         constructor: ConflictException,
         response: expect.objectContaining({ code: 'ROOM_NAME_DUPLICATE' }),
       });
+      expect(auditLogRecord).not.toHaveBeenCalled();
     });
 
     it('displayOrder 미지정이면 0으로 저장', async () => {
       roomCount.mockResolvedValue(0);
       roomCreate.mockResolvedValue(buildRoom());
 
-      await service.create({ name: '회의실 X' });
+      await service.create({ name: '회의실 X' }, ACTOR_ID);
 
       expect(roomCreate).toHaveBeenCalledWith(
         expect.objectContaining({ data: expect.objectContaining({ displayOrder: 0 }) }),
@@ -208,10 +223,14 @@ describe('RoomService', () => {
       roomFindUnique.mockResolvedValue(buildRoom());
       roomUpdate.mockResolvedValue(buildRoom({ name: '변경됨', isActive: false }));
 
-      const result = await service.update('11111111-1111-4111-8111-111111111111', {
-        name: '변경됨',
-        isActive: false,
-      });
+      const result = await service.update(
+        '11111111-1111-4111-8111-111111111111',
+        {
+          name: '변경됨',
+          isActive: false,
+        },
+        ACTOR_ID,
+      );
 
       expect(roomUpdate).toHaveBeenCalledWith({
         where: { id: '11111111-1111-4111-8111-111111111111' },
@@ -219,18 +238,33 @@ describe('RoomService', () => {
       });
       expect(result.name).toBe('변경됨');
       expect(result.isActive).toBe(false);
+      // 변경된 필드만 changes 에 — 변경되지 않은 필드는 노이즈로 들어가지 않는다.
+      expect(auditLogRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'ROOM_UPDATED',
+          targetType: 'ROOM',
+          actorId: ACTOR_ID,
+          payload: expect.objectContaining({
+            changes: expect.objectContaining({
+              name: { before: '회의실 A', after: '변경됨' },
+              isActive: { before: true, after: false },
+            }),
+          }),
+        }),
+      );
     });
 
     it('없으면 ROOM_NOT_FOUND', async () => {
       roomFindUnique.mockResolvedValue(null);
 
       await expect(
-        service.update('11111111-1111-4111-8111-111111111111', { name: '변경됨' }),
+        service.update('11111111-1111-4111-8111-111111111111', { name: '변경됨' }, ACTOR_ID),
       ).rejects.toMatchObject({
         constructor: NotFoundException,
         response: expect.objectContaining({ code: 'ROOM_NOT_FOUND' }),
       });
       expect(roomUpdate).not.toHaveBeenCalled();
+      expect(auditLogRecord).not.toHaveBeenCalled();
     });
 
     it('이름 중복 시 ROOM_NAME_DUPLICATE', async () => {
@@ -244,7 +278,7 @@ describe('RoomService', () => {
       );
 
       await expect(
-        service.update('11111111-1111-4111-8111-111111111111', { name: '중복' }),
+        service.update('11111111-1111-4111-8111-111111111111', { name: '중복' }, ACTOR_ID),
       ).rejects.toMatchObject({
         constructor: ConflictException,
         response: expect.objectContaining({ code: 'ROOM_NAME_DUPLICATE' }),
@@ -258,7 +292,7 @@ describe('RoomService', () => {
       bookingCount.mockResolvedValue(0);
       roomDelete.mockResolvedValue(buildRoom());
 
-      await service.remove('11111111-1111-4111-8111-111111111111');
+      await service.remove('11111111-1111-4111-8111-111111111111', ACTOR_ID);
 
       expect(bookingCount).toHaveBeenCalledWith({
         where: {
@@ -270,23 +304,36 @@ describe('RoomService', () => {
       expect(roomDelete).toHaveBeenCalledWith({
         where: { id: '11111111-1111-4111-8111-111111111111' },
       });
+      expect(auditLogRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'ROOM_DELETED',
+          targetType: 'ROOM',
+          actorId: ACTOR_ID,
+          payload: expect.objectContaining({ name: '회의실 A' }),
+        }),
+      );
     });
 
     it('미래 예약이 있으면 ROOM_HAS_FUTURE_BOOKINGS', async () => {
       roomFindUnique.mockResolvedValue(buildRoom());
       bookingCount.mockResolvedValue(2);
 
-      await expect(service.remove('11111111-1111-4111-8111-111111111111')).rejects.toMatchObject({
+      await expect(
+        service.remove('11111111-1111-4111-8111-111111111111', ACTOR_ID),
+      ).rejects.toMatchObject({
         constructor: ConflictException,
         response: expect.objectContaining({ code: 'ROOM_HAS_FUTURE_BOOKINGS' }),
       });
       expect(roomDelete).not.toHaveBeenCalled();
+      expect(auditLogRecord).not.toHaveBeenCalled();
     });
 
     it('없는 회의실이면 ROOM_NOT_FOUND', async () => {
       roomFindUnique.mockResolvedValue(null);
 
-      await expect(service.remove('11111111-1111-4111-8111-111111111111')).rejects.toMatchObject({
+      await expect(
+        service.remove('11111111-1111-4111-8111-111111111111', ACTOR_ID),
+      ).rejects.toMatchObject({
         constructor: NotFoundException,
         response: expect.objectContaining({ code: 'ROOM_NOT_FOUND' }),
       });
