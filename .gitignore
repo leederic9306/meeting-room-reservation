@@ -63,3 +63,11 @@ prisma/generated/
 .cache/
 .turbo/
 .eslintcache
+
+# =============================================================================
+# Local debug artifacts (Playwright MCP, ad-hoc screenshots)
+# =============================================================================
+.playwright-mcp/
+*.png
+!docs/**/*.png
+!apps/frontend/public/**/*.png

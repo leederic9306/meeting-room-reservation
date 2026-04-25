@@ -5,6 +5,7 @@
     "dist",
     "coverage",
     "test",
+    "prisma",
     "src/**/*.spec.ts",
     "src/**/*.e2e-spec.ts"
   ]
