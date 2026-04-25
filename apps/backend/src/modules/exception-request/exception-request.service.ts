@@ -6,10 +6,15 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { type Booking, ExceptionRequestStatus, Prisma, UserRole } from '@prisma/client';
+import { formatInTimeZone } from 'date-fns-tz';
 
+import type { Env } from '../../config/env.validation';
+import { MailTemplateRenderer } from '../../infra/mail/mail-template.renderer';
 import { MailService } from '../../infra/mail/mail.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 import type { CreateAdminBookingDto } from './dto/create-admin-booking.dto';
 import type { CreateExceptionRequestDto } from './dto/create-exception-request.dto';
@@ -23,6 +28,8 @@ import {
 } from './dto/exception-request.dto';
 import type { ListExceptionRequestsQuery } from './dto/list-exception-requests.query';
 
+const KST = 'Asia/Seoul';
+const KST_DATE_FORMAT = "yyyy-MM-dd (EEE) HH:mm 'KST'";
 const QUARTER_MINUTES = 15;
 const NORMAL_BOOKING_MAX_MINUTES = 240; // 일반 예약 상한 — 이를 초과해야 예외 신청 의미 있음
 const DEFAULT_PAGE = 1;
@@ -36,9 +43,14 @@ const REQUEST_RELATIONS = {
   booking: { select: { id: true } },
 } as const;
 
-const BOOKING_RELATIONS = {
+/**
+ * 관리자 직접 예약(/admin/bookings) 생성 시 사용하는 include — 메일 발송용으로 user 의 email 까지 포함.
+ * BOOKING_RELATIONS 확장이 아니라 별도로 두는 이유: email 은 일반 booking 응답에 노출되면 안 되므로,
+ * 메일 발송 경로에서만 fetch 한다.
+ */
+const ADMIN_BOOKING_RELATIONS = {
   room: { select: { id: true, name: true } },
-  user: { select: { id: true, name: true, department: true } },
+  user: { select: { id: true, name: true, department: true, email: true } },
 } as const;
 
 export interface ActorContext {
@@ -66,6 +78,12 @@ export interface PaginatedExceptionRequests {
  *    인접 충돌은 EXCLUDE 제약(SQLSTATE 23P01)이 진실의 원천. 동시 승인 race도 DB가 차단.
  *  - 메일 발송은 트랜잭션 외부(커밋 후)에서 — 발송 실패가 상태 전이를 롤백하지 않도록.
  *  - AuditLog 는 관리자 행위(승인/반려/직접 예약)에만 기록.
+ *
+ * 메일 시점:
+ *  - create  → 신청자에게 접수 확인 (참고용 충돌 건수 동봉)
+ *  - approve → 신청자에게 승인 결과 + Booking ID
+ *  - reject  → 신청자에게 반려 사유
+ *  - createAdminBooking → 대상 사용자에게 관리자 직접 예약 알림
  */
 @Injectable()
 export class ExceptionRequestService {
@@ -74,6 +92,9 @@ export class ExceptionRequestService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
+    private readonly mailTemplates: MailTemplateRenderer,
+    private readonly config: ConfigService<Env, true>,
+    private readonly auditLog: AuditLogService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -106,6 +127,17 @@ export class ExceptionRequestService {
 
     // 신청 시점 충돌 힌트 — 승인 시점에 다시 검증되므로 안내 목적.
     const conflicts = await this.findOverlappingBookings(dto.roomId, startAt, endAt);
+
+    // 신청자에게 접수 확인 메일 — fire-and-forget. 실패해도 신청 자체는 성공.
+    void this.sendReceiptMail(
+      created as ExceptionRequestWithRelations & { user: { email: string } },
+      conflicts.length,
+    ).catch((e) => {
+      this.logger.error(
+        `접수 메일 발송 실패: requestId=${created.id}`,
+        e instanceof Error ? e.stack : e,
+      );
+    });
 
     return {
       ...toExceptionRequestDto(created as ExceptionRequestWithRelations),
@@ -268,15 +300,16 @@ export class ExceptionRequestService {
         });
 
         // 5) AuditLog (트랜잭션 내 — 상태 전이와 원자성 유지).
-        await tx.auditLog.create({
-          data: {
-            actorId: actor.id,
+        await this.auditLog.record(
+          {
             action: 'EXCEPTION_APPROVED',
             targetType: 'EXCEPTION_REQUEST',
             targetId: locked.id,
+            actorId: actor.id,
             payload: { bookingId: booking.id, requesterId: locked.user_id },
           },
-        });
+          tx,
+        );
 
         return {
           updated: updated as ExceptionRequestWithRelations & { user: { email: string } },
@@ -345,15 +378,16 @@ export class ExceptionRequestService {
         include: REQUEST_RELATIONS,
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId: actor.id,
+      await this.auditLog.record(
+        {
           action: 'EXCEPTION_REJECTED',
           targetType: 'EXCEPTION_REQUEST',
           targetId: locked.id,
+          actorId: actor.id,
           payload: { reviewComment, requesterId: locked.user_id },
         },
-      });
+        tx,
+      );
 
       return updated as ExceptionRequestWithRelations & { user: { email: string } };
     });
@@ -376,6 +410,9 @@ export class ExceptionRequestService {
    * 관리자 직접 예약. 4시간 / 과거 시점 / 시작-종료 길이 제한 모두 우회한다.
    * 단, 15분 단위와 시작 < 종료, 회의실 활성, EXCLUDE 충돌은 그대로 강제.
    * AuditLog 에 BOOKING_CREATED_BY_ADMIN 으로 기록.
+   *
+   * 대상 사용자에게는 알림 메일 발송(트랜잭션 외부, fire-and-forget) — 본인이 모르게 잡힌
+   * 예약을 사후에라도 인지할 수 있도록.
    */
   async createAdminBooking(
     dto: CreateAdminBookingDto,
@@ -388,9 +425,12 @@ export class ExceptionRequestService {
     await this.assertUserActive(dto.userId);
     await this.assertRoomActive(dto.roomId);
 
-    let booking: Booking;
+    let booking: Booking & {
+      room: { id: string; name: string };
+      user: { id: string; name: string; department: string | null; email: string };
+    };
     try {
-      booking = await this.prisma.booking.create({
+      booking = (await this.prisma.booking.create({
         data: {
           roomId: dto.roomId,
           userId: dto.userId,
@@ -400,8 +440,8 @@ export class ExceptionRequestService {
           endAt,
           createdByAdmin: true,
         },
-        include: BOOKING_RELATIONS,
-      });
+        include: ADMIN_BOOKING_RELATIONS,
+      })) as typeof booking;
     } catch (error) {
       if (isExcludeConflictError(error)) {
         throw new ConflictException({
@@ -412,18 +452,27 @@ export class ExceptionRequestService {
       throw error;
     }
 
-    await this.prisma.auditLog.create({
-      data: {
-        actorId: actor.id,
-        action: 'BOOKING_CREATED_BY_ADMIN',
-        targetType: 'BOOKING',
-        targetId: booking.id,
-        payload: {
-          targetUserId: dto.userId,
-          startAt: startAt.toISOString(),
-          endAt: endAt.toISOString(),
-        },
+    await this.auditLog.record({
+      action: 'BOOKING_BY_ADMIN',
+      targetType: 'BOOKING',
+      targetId: booking.id,
+      actorId: actor.id,
+      payload: {
+        targetUserId: dto.userId,
+        roomId: dto.roomId,
+        title: dto.title,
+        startAt: startAt.toISOString(),
+        endAt: endAt.toISOString(),
       },
+    });
+
+    // 대상 사용자 알림 메일 — fire-and-forget.
+    // 처리자(admin) 이름은 별도 lookup (AuthUser 에는 name 이 없음).
+    void this.sendAdminBookingMail(booking, actor.id).catch((e) => {
+      this.logger.error(
+        `관리자 예약 알림 메일 발송 실패: bookingId=${booking.id}`,
+        e instanceof Error ? e.stack : e,
+      );
     });
 
     return { id: booking.id, userId: booking.userId, createdByAdmin: true };
@@ -578,42 +627,161 @@ export class ExceptionRequestService {
     }));
   }
 
+  // ---------------------------------------------------------------------------
+  // 메일 발송 (HBS 템플릿 — src/infra/mail/templates/exception-request-*.hbs)
+  // 모든 메일은 fire-and-forget 호출자 측에서 catch 하므로 throw 가능. plain text
+  // 폴백을 함께 보내 메일 클라이언트가 HTML 비활성인 경우에도 핵심 정보가 도달하도록 한다.
+  // ---------------------------------------------------------------------------
+
+  private async sendReceiptMail(
+    request: ExceptionRequestWithRelations & { user: { email: string } },
+    conflictCount: number,
+  ): Promise<void> {
+    const appName = this.config.get('MAIL_FROM_NAME', { infer: true });
+    const subject = `[${appName}] 예외 신청이 접수되었습니다`;
+    const view = {
+      appName,
+      name: request.user.name,
+      title: request.title,
+      roomName: request.room.name,
+      startAt: formatKstDateTime(request.startAt),
+      endAt: formatKstDateTime(request.endAt),
+      conflictCount: conflictCount > 0 ? conflictCount : null,
+    };
+    const text = [
+      `${request.user.name}님,`,
+      ``,
+      `예외 신청이 관리자 검토 대기열에 접수되었습니다.`,
+      `- 제목: ${request.title}`,
+      `- 회의실: ${request.room.name}`,
+      `- 시간: ${view.startAt} ~ ${view.endAt}`,
+      conflictCount > 0 ? `- 신청 시점 충돌: ${conflictCount}건 (검토 시 다시 확인됨)` : undefined,
+      ``,
+      `검토 결과는 별도 메일로 안내됩니다.`,
+    ]
+      .filter((line): line is string => line !== undefined)
+      .join('\n');
+
+    const html = await this.mailTemplates.render('exception-request-received', view);
+    await this.mailService.send({ to: request.user.email, subject, text, html });
+  }
+
   private async sendApprovalMail(
     request: ExceptionRequestWithRelations & { user: { email: string } },
     booking: Booking,
   ): Promise<void> {
-    const subject = '[회의실 예약] 예외 신청이 승인되었습니다';
+    const appName = this.config.get('MAIL_FROM_NAME', { infer: true });
+    const subject = `[${appName}] 예외 신청이 승인되었습니다`;
+    const view = {
+      appName,
+      name: request.user.name,
+      title: request.title,
+      roomName: request.room.name,
+      startAt: formatKstDateTime(request.startAt),
+      endAt: formatKstDateTime(request.endAt),
+      bookingId: booking.id,
+      dashboardUrl: this.dashboardUrl(),
+    };
     const text = [
       `${request.user.name}님,`,
       ``,
-      `요청하신 예외 예약이 승인되었습니다.`,
+      `예외 예약이 승인되었습니다.`,
       `- 제목: ${request.title}`,
       `- 회의실: ${request.room.name}`,
-      `- 시작: ${request.startAt.toISOString()}`,
-      `- 종료: ${request.endAt.toISOString()}`,
+      `- 시간: ${view.startAt} ~ ${view.endAt}`,
       `- 예약 ID: ${booking.id}`,
-    ].join('\n');
-    await this.mailService.send({ to: request.user.email, subject, text });
+      view.dashboardUrl ? `- 캘린더: ${view.dashboardUrl}` : undefined,
+    ]
+      .filter((line): line is string => line !== undefined)
+      .join('\n');
+
+    const html = await this.mailTemplates.render('exception-request-approved', view);
+    await this.mailService.send({ to: request.user.email, subject, text, html });
   }
 
   private async sendRejectionMail(
     request: ExceptionRequestWithRelations & { user: { email: string } },
     reviewComment: string,
   ): Promise<void> {
-    const subject = '[회의실 예약] 예외 신청이 반려되었습니다';
+    const appName = this.config.get('MAIL_FROM_NAME', { infer: true });
+    const subject = `[${appName}] 예외 신청이 반려되었습니다`;
+    const view = {
+      appName,
+      name: request.user.name,
+      title: request.title,
+      roomName: request.room.name,
+      startAt: formatKstDateTime(request.startAt),
+      endAt: formatKstDateTime(request.endAt),
+      reviewComment,
+    };
     const text = [
       `${request.user.name}님,`,
       ``,
-      `요청하신 예외 예약이 반려되었습니다.`,
+      `예외 예약이 반려되었습니다.`,
       `- 제목: ${request.title}`,
       `- 회의실: ${request.room.name}`,
-      `- 시작: ${request.startAt.toISOString()}`,
-      `- 종료: ${request.endAt.toISOString()}`,
+      `- 시간: ${view.startAt} ~ ${view.endAt}`,
       ``,
       `반려 사유:`,
       reviewComment,
     ].join('\n');
-    await this.mailService.send({ to: request.user.email, subject, text });
+
+    const html = await this.mailTemplates.render('exception-request-rejected', view);
+    await this.mailService.send({ to: request.user.email, subject, text, html });
+  }
+
+  private async sendAdminBookingMail(
+    booking: Booking & {
+      room: { id: string; name: string };
+      user: { id: string; name: string; email: string };
+    },
+    adminId: string,
+  ): Promise<void> {
+    // 처리자 이름 lookup — JWT AuthUser 에는 name 이 없으므로 별도 조회.
+    // 실패하거나 못 찾으면 adminName 미설정으로 진행 (템플릿이 graceful 처리).
+    const admin = await this.prisma.user.findUnique({
+      where: { id: adminId },
+      select: { name: true },
+    });
+    const appName = this.config.get('MAIL_FROM_NAME', { infer: true });
+    const subject = `[${appName}] 새 예약이 등록되었습니다`;
+    const view = {
+      appName,
+      name: booking.user.name,
+      adminName: admin?.name ?? null,
+      title: booking.title,
+      roomName: booking.room.name,
+      startAt: formatKstDateTime(booking.startAt),
+      endAt: formatKstDateTime(booking.endAt),
+      bookingId: booking.id,
+      dashboardUrl: this.dashboardUrl(),
+    };
+    const text = [
+      `${booking.user.name}님,`,
+      ``,
+      `관리자가 회원님 명의로 회의실 예약을 생성했습니다.`,
+      admin?.name ? `- 처리자: ${admin.name}` : undefined,
+      `- 제목: ${booking.title}`,
+      `- 회의실: ${booking.room.name}`,
+      `- 시간: ${view.startAt} ~ ${view.endAt}`,
+      `- 예약 ID: ${booking.id}`,
+      view.dashboardUrl ? `- 캘린더: ${view.dashboardUrl}` : undefined,
+    ]
+      .filter((line): line is string => line !== undefined)
+      .join('\n');
+
+    const html = await this.mailTemplates.render('admin-booking-created', view);
+    await this.mailService.send({ to: booking.user.email, subject, text, html });
+  }
+
+  /**
+   * CORS_ORIGINS 의 첫 번째 값을 프런트 base url 로 사용 — auth 메일과 동일 규약.
+   */
+  private dashboardUrl(): string | null {
+    const origins = this.config.get('CORS_ORIGINS', { infer: true });
+    const baseUrl = origins.split(',')[0]?.trim();
+    if (!baseUrl) return null;
+    return `${baseUrl}/dashboard`;
   }
 }
 
@@ -623,6 +791,11 @@ function isQuarterAligned(date: Date): boolean {
     date.getUTCMilliseconds() === 0 &&
     date.getUTCMinutes() % QUARTER_MINUTES === 0
   );
+}
+
+/** 메일 본문/템플릿 공용 — KST 타임존으로 사람이 읽기 좋은 표기. */
+function formatKstDateTime(d: Date): string {
+  return formatInTimeZone(d, KST, KST_DATE_FORMAT);
 }
 
 /**

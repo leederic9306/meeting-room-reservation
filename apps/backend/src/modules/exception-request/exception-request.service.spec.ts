@@ -1,8 +1,11 @@
+import { ConfigService } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { ExceptionRequestStatus, Prisma, UserRole } from '@prisma/client';
 
+import { MailTemplateRenderer } from '../../infra/mail/mail-template.renderer';
 import { MailService } from '../../infra/mail/mail.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 import type { CreateAdminBookingDto } from './dto/create-admin-booking.dto';
 import type { CreateExceptionRequestDto } from './dto/create-exception-request.dto';
@@ -103,6 +106,9 @@ describe('ExceptionRequestService', () => {
     $transaction: jest.Mock;
   };
   let mail: { send: jest.Mock };
+  let mailTemplates: { render: jest.Mock };
+  let config: { get: jest.Mock };
+  let auditLogRecord: jest.Mock;
 
   beforeAll(() => {
     jest.useFakeTimers();
@@ -142,12 +148,24 @@ describe('ExceptionRequestService', () => {
     });
 
     mail = { send: jest.fn().mockResolvedValue(undefined) };
+    mailTemplates = { render: jest.fn().mockResolvedValue('<html>rendered</html>') };
+    config = {
+      get: jest.fn((key: string) => {
+        if (key === 'MAIL_FROM_NAME') return '회의실 예약 시스템';
+        if (key === 'CORS_ORIGINS') return 'http://localhost:3000';
+        return undefined;
+      }),
+    };
+    auditLogRecord = jest.fn().mockResolvedValue(undefined);
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       providers: [
         ExceptionRequestService,
         { provide: PrismaService, useValue: prisma },
         { provide: MailService, useValue: mail },
+        { provide: MailTemplateRenderer, useValue: mailTemplates },
+        { provide: ConfigService, useValue: config },
+        { provide: AuditLogService, useValue: { record: auditLogRecord } },
       ],
     }).compile();
 
@@ -232,6 +250,39 @@ describe('ExceptionRequestService', () => {
       expect(result.conflicts).toHaveLength(1);
       expect(result.conflicts[0]).toMatchObject({ bookingId: 'booking-1' });
     });
+
+    it('신청 성공 시 신청자에게 접수 확인 메일 — exception-request-received 템플릿', async () => {
+      prisma.booking.findMany.mockResolvedValue([
+        // 1건 충돌 — 템플릿에 conflictCount 가 전달되는지 확인.
+        { id: 'b', title: 'x', startAt: LONG_FUTURE_START, endAt: LONG_FUTURE_END },
+      ]);
+      await service.create(baseDto, userActor);
+      // fire-and-forget — 마이크로태스크 처리 후 검증.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mailTemplates.render).toHaveBeenCalledWith(
+        'exception-request-received',
+        expect.objectContaining({ name: '홍길동', conflictCount: 1 }),
+      );
+      expect(mail.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: 'hong@example.com',
+          subject: expect.stringContaining('접수'),
+          html: '<html>rendered</html>',
+        }),
+      );
+    });
+
+    it('충돌 0건이면 conflictCount=null 로 템플릿에 전달 (배지 미표시)', async () => {
+      prisma.booking.findMany.mockResolvedValue([]);
+      await service.create(baseDto, userActor);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mailTemplates.render).toHaveBeenCalledWith(
+        'exception-request-received',
+        expect.objectContaining({ conflictCount: null }),
+      );
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -302,7 +353,6 @@ describe('ExceptionRequestService', () => {
           booking: { id: 'booking-new' },
         }),
       );
-      prisma.auditLog.create.mockResolvedValue({});
     });
 
     it('정상 흐름 — Booking 생성 + AuditLog + 메일 발송', async () => {
@@ -321,23 +371,28 @@ describe('ExceptionRequestService', () => {
           }),
         }),
       );
-      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect(auditLogRecord).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({
-            action: 'EXCEPTION_APPROVED',
-            targetType: 'EXCEPTION_REQUEST',
-            targetId: REQUEST_ID,
-          }),
+          action: 'EXCEPTION_APPROVED',
+          targetType: 'EXCEPTION_REQUEST',
+          targetId: REQUEST_ID,
+          actorId: ADMIN_ID,
         }),
+        expect.anything(), // 두 번째 인자: tx (트랜잭션 내 기록)
       );
 
-      // 메일은 fire-and-forget — 마이크로태스크 처리 후 검증.
+      // 메일은 fire-and-forget — 마이크로태스크 처리 후 검증. 템플릿 이름과 bookingId 까지 검증.
       await Promise.resolve();
       await Promise.resolve();
+      expect(mailTemplates.render).toHaveBeenCalledWith(
+        'exception-request-approved',
+        expect.objectContaining({ bookingId: 'booking-new', name: '홍길동' }),
+      );
       expect(mail.send).toHaveBeenCalledWith(
         expect.objectContaining({
           to: 'hong@example.com',
           subject: expect.stringContaining('승인'),
+          html: '<html>rendered</html>',
         }),
       );
     });
@@ -404,24 +459,30 @@ describe('ExceptionRequestService', () => {
           reviewedAt: FIXED_NOW,
         }),
       );
-      prisma.auditLog.create.mockResolvedValue({});
     });
 
     it('정상 흐름 — 상태 전이 + AuditLog + 반려 메일', async () => {
       const result = await service.reject(REQUEST_ID, '사유가 부족합니다.', adminActor);
       expect(result.status).toBe(ExceptionRequestStatus.REJECTED);
-      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect(auditLogRecord).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({
-            action: 'EXCEPTION_REJECTED',
-            targetType: 'EXCEPTION_REQUEST',
-          }),
+          action: 'EXCEPTION_REJECTED',
+          targetType: 'EXCEPTION_REQUEST',
+          actorId: ADMIN_ID,
         }),
+        expect.anything(), // tx
       );
       await Promise.resolve();
       await Promise.resolve();
+      expect(mailTemplates.render).toHaveBeenCalledWith(
+        'exception-request-rejected',
+        expect.objectContaining({ name: '홍길동', reviewComment: '사유가 부족합니다.' }),
+      );
       expect(mail.send).toHaveBeenCalledWith(
-        expect.objectContaining({ subject: expect.stringContaining('반려') }),
+        expect.objectContaining({
+          subject: expect.stringContaining('반려'),
+          html: '<html>rendered</html>',
+        }),
       );
     });
 
@@ -457,15 +518,28 @@ describe('ExceptionRequestService', () => {
 
     beforeEach(() => {
       prisma.room.findUnique.mockResolvedValue({ id: ROOM_ID, isActive: true });
-      prisma.user.findUnique.mockResolvedValue({ id: USER_ID, status: 'ACTIVE' });
+      // 1차 호출(assertUserActive: 대상 사용자) / 2차 호출(메일용 admin name lookup) 모두 커버.
+      prisma.user.findUnique.mockImplementation(({ where }: { where: { id: string } }) => {
+        if (where.id === USER_ID) {
+          return Promise.resolve({ id: USER_ID, status: 'ACTIVE' });
+        }
+        if (where.id === ADMIN_ID) {
+          return Promise.resolve({ name: '관리자' });
+        }
+        return Promise.resolve(null);
+      });
       prisma.booking.create.mockResolvedValue({
         id: 'booking-admin',
         userId: USER_ID,
+        title: '관리자 직접 예약',
+        startAt: LONG_FUTURE_START,
+        endAt: LONG_FUTURE_END,
+        room: { id: ROOM_ID, name: '회의실 A' },
+        user: { id: USER_ID, name: '홍길동', department: '개발팀', email: 'hong@example.com' },
       });
-      prisma.auditLog.create.mockResolvedValue({});
     });
 
-    it('정상 흐름 — Booking 생성 + AuditLog (4시간 초과/과거 우회 허용)', async () => {
+    it('정상 흐름 — Booking 생성 + AuditLog + 알림 메일 (4시간 초과/과거 우회 허용)', async () => {
       const result = await service.createAdminBooking(baseDto, adminActor);
       expect(result.id).toBe('booking-admin');
       expect(result.createdByAdmin).toBe(true);
@@ -474,13 +548,32 @@ describe('ExceptionRequestService', () => {
           data: expect.objectContaining({ createdByAdmin: true, userId: USER_ID }),
         }),
       );
-      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect(auditLogRecord).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({
-            action: 'BOOKING_CREATED_BY_ADMIN',
-            targetType: 'BOOKING',
-            targetId: 'booking-admin',
-          }),
+          action: 'BOOKING_BY_ADMIN',
+          targetType: 'BOOKING',
+          targetId: 'booking-admin',
+          actorId: ADMIN_ID,
+        }),
+      );
+
+      // 대상 사용자 알림 메일 — fire-and-forget. admin name 도 같이 전달.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mailTemplates.render).toHaveBeenCalledWith(
+        'admin-booking-created',
+        expect.objectContaining({
+          name: '홍길동',
+          adminName: '관리자',
+          bookingId: 'booking-admin',
+        }),
+      );
+      expect(mail.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: 'hong@example.com',
+          subject: expect.stringContaining('새 예약'),
+          html: '<html>rendered</html>',
         }),
       );
     });
