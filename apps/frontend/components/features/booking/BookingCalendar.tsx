@@ -284,9 +284,12 @@ export function BookingCalendar(): JSX.Element {
           }}
           locale="ko"
           buttonText={{ today: '오늘' }}
-          // 모든 표시/계산은 KST. 이벤트 객체의 native Date는 UTC instant를 유지하므로
-          // toISOString()은 그대로 백엔드 포맷과 호환된다.
-          timeZone="Asia/Seoul"
+          // 사용자 브라우저의 로컬 시간대로 동작 — 사내 사용자 전원이 KST 가정.
+          // FullCalendar v6는 named timezone(예: "Asia/Seoul")을 정확히 다루려면
+          // @fullcalendar/luxon 또는 @fullcalendar/moment-timezone 플러그인이 필요하다.
+          // 플러그인 없이 timeZone="Asia/Seoul"을 지정하면 fake-UTC 모드로 빠져
+          // 콜백의 Date.getUTCHours()가 표시된 KST 시간을 그대로 담아 토하는 문제가 있어,
+          // 슬롯 클릭/예약 표시 시각이 9시간씩 어긋났다.
           allDaySlot={false}
           nowIndicator
           weekends
@@ -372,8 +375,19 @@ export function BookingCalendar(): JSX.Element {
             const booking = arg.event.extendedProps.booking as BookingDto | undefined;
             const isRecurrence =
               booking?.recurrenceId !== null && booking?.recurrenceId !== undefined;
+            // 월 뷰는 색 블록이 아닌 텍스트 형태로 렌더되어 회의실 색이 안 보인다.
+            // 시간/제목 앞에 작은 색 점을 붙여 회의실 식별성을 살린다.
+            // 시간/일 뷰는 배경 자체가 회의실 색이라 점이 중복돼 생략.
+            const isMonthView = arg.view.type === 'dayGridMonth';
             return (
               <div className="flex items-center gap-1 overflow-hidden px-1 text-xs">
+                {isMonthView ? (
+                  <span
+                    aria-hidden
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: arg.event.backgroundColor }}
+                  />
+                ) : null}
                 {arg.timeText ? <span className="shrink-0 font-medium">{arg.timeText}</span> : null}
                 {isRecurrence ? (
                   <span aria-label="반복 예약" title="반복 예약" className="shrink-0">

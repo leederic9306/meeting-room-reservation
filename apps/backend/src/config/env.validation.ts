@@ -15,7 +15,8 @@ export const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(16, 'JWT_REFRESH_SECRET은 최소 16자 이상이어야 합니다'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('14d'),
 
-  CORS_ORIGINS: z.string().default('http://localhost:3000'),
+  // dev에서 사용자가 localhost / 127.0.0.1 어느 쪽으로 들어와도 동작하도록 둘 다 기본 허용.
+  CORS_ORIGINS: z.string().default('http://localhost:3000,http://127.0.0.1:3000'),
 
   MAIL_HOST: z.string().default('localhost'),
   MAIL_PORT: z.coerce.number().int().positive().default(1025),

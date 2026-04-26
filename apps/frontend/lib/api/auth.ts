@@ -4,6 +4,13 @@ import type { AuthRole, AuthUser } from '@/stores/auth.store';
 
 import { api, unwrap } from './axios';
 
+/**
+ * 인증 수립(로그인/가입/검증/비밀번호) 엔드포인트는 401을 받아도 자동 refresh 흐름을
+ * 타선 안 된다 — 잘못된 자격증명을 INVALID_CREDENTIALS로 그대로 노출해야 사용자가
+ * 알맞은 에러를 본다. mr_session 쿠키 잔재가 있을 때의 잘못된 retry를 방지.
+ */
+const NO_AUTH_REFRESH = { _skipAuthRefresh: true };
+
 // ---- 공유 검증 규칙 -------------------------------------------------------
 
 /** PRD AUTH-002 — 8자 이상, 영문+숫자+특수문자 각 1자 이상. */
@@ -95,29 +102,43 @@ export async function signup(values: SignupFormValues): Promise<SignupResponseDa
     employeeNo: values.employeeNo || undefined,
     phone: values.phone || undefined,
   };
-  const res = await api.post<{ data: SignupResponseData }>('/auth/signup', payload);
+  const res = await api.post<{ data: SignupResponseData }>(
+    '/auth/signup',
+    payload,
+    NO_AUTH_REFRESH,
+  );
   return unwrap(res.data);
 }
 
 export async function verifyEmail(
   values: VerifyEmailFormValues,
 ): Promise<{ accessToken: string; user: AuthUser }> {
-  const res = await api.post<{ data: VerifyEmailResponseData }>('/auth/verify-email', values);
+  const res = await api.post<{ data: VerifyEmailResponseData }>(
+    '/auth/verify-email',
+    values,
+    NO_AUTH_REFRESH,
+  );
   const { accessToken, user } = unwrap(res.data);
   return { accessToken, user };
 }
 
 export async function resendVerificationCode(email: string): Promise<ResendCodeResponseData> {
-  const res = await api.post<{ data: ResendCodeResponseData }>('/auth/resend-code', {
-    email,
-  });
+  const res = await api.post<{ data: ResendCodeResponseData }>(
+    '/auth/resend-code',
+    { email },
+    NO_AUTH_REFRESH,
+  );
   return unwrap(res.data);
 }
 
 export async function login(
   values: LoginFormValues,
 ): Promise<{ accessToken: string; user: AuthUser }> {
-  const res = await api.post<{ data: AuthSessionResponseData }>('/auth/login', values);
+  const res = await api.post<{ data: AuthSessionResponseData }>(
+    '/auth/login',
+    values,
+    NO_AUTH_REFRESH,
+  );
   return unwrap(res.data);
 }
 
@@ -126,9 +147,11 @@ export async function logout(): Promise<void> {
 }
 
 export async function requestPasswordReset(email: string): Promise<PasswordResetMessageData> {
-  const res = await api.post<{ data: PasswordResetMessageData }>('/auth/password-reset/request', {
-    email,
-  });
+  const res = await api.post<{ data: PasswordResetMessageData }>(
+    '/auth/password-reset/request',
+    { email },
+    NO_AUTH_REFRESH,
+  );
   return unwrap(res.data);
 }
 
@@ -139,6 +162,7 @@ export async function confirmPasswordReset(payload: {
   const res = await api.post<{ data: PasswordResetMessageData }>(
     '/auth/password-reset/confirm',
     payload,
+    NO_AUTH_REFRESH,
   );
   return unwrap(res.data);
 }
