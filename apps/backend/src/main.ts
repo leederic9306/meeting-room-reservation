@@ -26,11 +26,29 @@ async function bootstrap(): Promise<void> {
   // /health는 프리픽스 제외 (PRD/roadmap의 GET /health 규약)
   app.setGlobalPrefix('api/v1', { exclude: ['health'] });
 
-  const corsOrigins = config
+  const configuredOrigins = config
     .get('CORS_ORIGINS', { infer: true })
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+  // dev에서는 사용자가 localhost / 127.0.0.1 어느 쪽으로 들어와도 동작하도록 양쪽을 자동 매핑.
+  // (운영에서는 실제 도메인만 허용해야 하므로 development에서만 적용.)
+  const isDev = config.get('NODE_ENV', { infer: true }) === 'development';
+  const corsOrigins = isDev
+    ? Array.from(
+        new Set(
+          configuredOrigins.flatMap((origin) => {
+            const variants = [origin];
+            if (origin.includes('://localhost')) {
+              variants.push(origin.replace('://localhost', '://127.0.0.1'));
+            } else if (origin.includes('://127.0.0.1')) {
+              variants.push(origin.replace('://127.0.0.1', '://localhost'));
+            }
+            return variants;
+          }),
+        ),
+      )
+    : configuredOrigins;
   app.enableCors({ origin: corsOrigins, credentials: true });
 
   app.enableShutdownHooks();
