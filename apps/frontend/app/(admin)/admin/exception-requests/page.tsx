@@ -31,11 +31,18 @@ const STATUS_LABEL: Record<ExceptionRequestStatus, string> = {
   CANCELLED: '취소됨',
 };
 
+/** 디자인 §4.4 — semantic 토큰 기반 상태 배지 */
 const STATUS_TONE: Record<ExceptionRequestStatus, string> = {
-  PENDING: 'bg-amber-100 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200',
-  APPROVED: 'bg-emerald-100 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200',
-  REJECTED: 'bg-rose-100 text-rose-900 dark:bg-rose-950/40 dark:text-rose-200',
-  CANCELLED: 'bg-muted text-muted-foreground',
+  PENDING: 'border-warning-500/20 bg-warning-50 text-warning-700',
+  APPROVED: 'border-success-500/20 bg-success-50 text-success-700',
+  REJECTED: 'border-danger-500/20 bg-danger-50 text-danger-700',
+  CANCELLED: 'border-neutral-200 bg-neutral-100 text-neutral-600',
+};
+const STATUS_DOT: Record<ExceptionRequestStatus, string> = {
+  PENDING: 'bg-warning-500',
+  APPROVED: 'bg-success-500',
+  REJECTED: 'bg-danger-500',
+  CANCELLED: 'bg-neutral-400',
 };
 
 const ERROR_TOAST: Partial<Record<string, string>> = {
@@ -66,7 +73,6 @@ export default function AdminExceptionRequestsPage(): JSX.Element {
       toast.success(
         `승인되었습니다. 예약 ID: ${result.bookingId.slice(0, 8)}… 캘린더에 즉시 반영됩니다.`,
       );
-      // 신청 목록 + 캘린더(bookings) + 새 신청 배지 모두 무효화 — 즉시 반영.
       void queryClient.invalidateQueries({ queryKey: ['admin', 'exception-requests'] });
       void queryClient.invalidateQueries({ queryKey: ['bookings'] });
       void queryClient.invalidateQueries({
@@ -104,20 +110,16 @@ export default function AdminExceptionRequestsPage(): JSX.Element {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold">예외 신청 검토</h2>
-        <p className="text-sm text-muted-foreground">
-          관리자 승인이 필요한 예약 신청 목록입니다. 승인 시 예약이 즉시 생성되고 캘린더에
-          반영됩니다.
-        </p>
-      </div>
+      <p className="text-sm text-neutral-500">
+        관리자 승인이 필요한 예약 신청 목록입니다. 승인 시 예약이 즉시 생성되고 캘린더에 반영됩니다.
+      </p>
 
       <div
         role="toolbar"
         aria-label="신청 상태 필터"
-        className="flex flex-wrap items-center gap-2 rounded-md border bg-card p-2"
+        className="flex flex-wrap items-center gap-1.5 rounded-xl border border-neutral-200 bg-white p-3 shadow-xs"
       >
-        <span className="px-1 text-xs font-medium text-muted-foreground">상태</span>
+        <span className="px-2 text-xs font-medium text-neutral-500">상태</span>
         <FilterChip
           label="전체"
           selected={filters.status === undefined}
@@ -133,145 +135,152 @@ export default function AdminExceptionRequestsPage(): JSX.Element {
         ))}
       </div>
 
-      <div className="overflow-x-auto rounded-md border bg-background">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
-            <tr>
-              <th className="px-4 py-2">신청자</th>
-              <th className="px-4 py-2">회의실</th>
-              <th className="px-4 py-2">날짜 / 시간</th>
-              <th className="px-4 py-2">제목 / 사유</th>
-              <th className="px-4 py-2">상태</th>
-              <th className="px-4 py-2 text-right">작업</th>
-            </tr>
-          </thead>
-          <tbody>
-            {requestsQuery.isLoading ? (
-              <TableSkeletonRows rows={5} columns={6} />
-            ) : requestsQuery.isError ? (
-              <tr>
-                <td colSpan={6} className="px-0 py-0">
-                  <ErrorState
-                    error={requestsQuery.error}
-                    onRetry={() => void requestsQuery.refetch()}
-                    isRetrying={requestsQuery.isFetching}
-                  />
-                </td>
+      <div className="overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-xs">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-neutral-200 bg-neutral-50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                <th className="px-4 py-3">신청자</th>
+                <th className="px-4 py-3">회의실</th>
+                <th className="px-4 py-3">날짜 / 시간</th>
+                <th className="px-4 py-3">제목 / 사유</th>
+                <th className="px-4 py-3">상태</th>
+                <th className="px-4 py-3 text-right">작업</th>
               </tr>
-            ) : (data?.data.length ?? 0) === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-0 py-0">
-                  <EmptyState
-                    icon={ClipboardCheck}
-                    title={
-                      filters.status === 'PENDING'
-                        ? '검토 대기 중인 신청이 없습니다'
-                        : '조건에 맞는 신청이 없습니다'
-                    }
-                    description={
-                      filters.status === 'PENDING'
-                        ? '새 예외 신청이 접수되면 여기에 표시됩니다.'
-                        : '다른 상태 필터를 선택해 보세요.'
-                    }
-                  />
-                </td>
-              </tr>
-            ) : (
-              data?.data.map((req) => {
-                const isPending = req.status === 'PENDING';
-                const isProcessing =
-                  (approveMutation.isPending && approveMutation.variables === req.id) ||
-                  (rejectMutation.isPending && rejectMutation.variables?.id === req.id);
-                return (
-                  <tr key={req.id} className="border-t align-top">
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{req.user.name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {req.user.department ?? '-'}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">{req.room.name}</td>
-                    <td className="px-4 py-3">
-                      <div>{formatKstDateTime(req.startAt)}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {formatKstTimeRange(req.startAt, req.endAt)}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{req.title}</div>
-                      <div
-                        className="mt-1 line-clamp-3 max-w-[24rem] text-xs text-muted-foreground"
-                        title={req.reason}
-                      >
-                        {req.reason}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={cn(
-                          'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
-                          STATUS_TONE[req.status],
-                        )}
-                      >
-                        {STATUS_LABEL[req.status]}
-                      </span>
-                      {req.reviewer ? (
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {req.reviewer.name} ·{' '}
-                          {req.reviewedAt ? new Date(req.reviewedAt).toLocaleString('ko-KR') : ''}
+            </thead>
+            <tbody className="divide-y divide-neutral-100">
+              {requestsQuery.isLoading ? (
+                <TableSkeletonRows rows={5} columns={6} />
+              ) : requestsQuery.isError ? (
+                <tr>
+                  <td colSpan={6} className="p-0">
+                    <ErrorState
+                      error={requestsQuery.error}
+                      onRetry={() => void requestsQuery.refetch()}
+                      isRetrying={requestsQuery.isFetching}
+                    />
+                  </td>
+                </tr>
+              ) : (data?.data.length ?? 0) === 0 ? (
+                <tr>
+                  <td colSpan={6} className="p-0">
+                    <EmptyState
+                      icon={ClipboardCheck}
+                      tone={filters.status === 'PENDING' ? 'brand' : 'neutral'}
+                      title={
+                        filters.status === 'PENDING'
+                          ? '검토 대기 중인 신청이 없습니다'
+                          : '조건에 맞는 신청이 없습니다'
+                      }
+                      description={
+                        filters.status === 'PENDING'
+                          ? '새 예외 신청이 접수되면 여기에 자동으로 표시됩니다. 30초마다 새로 확인합니다.'
+                          : '다른 상태 필터를 선택해 보세요.'
+                      }
+                    />
+                  </td>
+                </tr>
+              ) : (
+                data?.data.map((req) => {
+                  const isPending = req.status === 'PENDING';
+                  const isProcessing =
+                    (approveMutation.isPending && approveMutation.variables === req.id) ||
+                    (rejectMutation.isPending && rejectMutation.variables?.id === req.id);
+                  return (
+                    <tr key={req.id} className="align-top transition-colors hover:bg-neutral-50">
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-neutral-900">{req.user.name}</div>
+                        <div className="text-xs text-neutral-500">{req.user.department ?? '-'}</div>
+                      </td>
+                      <td className="px-4 py-3 text-neutral-700">{req.room.name}</td>
+                      <td className="px-4 py-3">
+                        <div className="tabular font-medium text-neutral-900">
+                          {formatKstDateTime(req.startAt)}
                         </div>
-                      ) : null}
-                      {req.reviewComment ? (
+                        <div className="tabular mt-0.5 text-[0.8125rem] text-neutral-500">
+                          {formatKstTimeRange(req.startAt, req.endAt)}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-neutral-900">{req.title}</div>
                         <div
-                          className="mt-1 max-w-[16rem] text-xs text-muted-foreground"
-                          title={req.reviewComment}
+                          className="mt-1 line-clamp-3 max-w-[24rem] text-xs text-neutral-500"
+                          title={req.reason}
                         >
-                          “{req.reviewComment}”
+                          {req.reason}
                         </div>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      {isPending ? (
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            disabled={isProcessing}
-                            onClick={() => setRejectTarget(req)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium',
+                            STATUS_TONE[req.status],
+                          )}
+                        >
+                          <span
+                            className={cn('h-1.5 w-1.5 rounded-full', STATUS_DOT[req.status])}
+                          />
+                          {STATUS_LABEL[req.status]}
+                        </span>
+                        {req.reviewer ? (
+                          <div className="mt-1 text-xs text-neutral-500">
+                            {req.reviewer.name} ·{' '}
+                            {req.reviewedAt ? new Date(req.reviewedAt).toLocaleString('ko-KR') : ''}
+                          </div>
+                        ) : null}
+                        {req.reviewComment ? (
+                          <div
+                            className="mt-1 max-w-[16rem] text-xs text-neutral-500"
+                            title={req.reviewComment}
                           >
-                            반려
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            disabled={isProcessing}
-                            onClick={() => handleApprove(req)}
-                          >
-                            {approveMutation.isPending && approveMutation.variables === req.id
-                              ? '승인 중...'
-                              : '승인'}
-                          </Button>
-                        </div>
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
+                            “{req.reviewComment}”
+                          </div>
+                        ) : null}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {isPending ? (
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              disabled={isProcessing}
+                              onClick={() => setRejectTarget(req)}
+                            >
+                              반려
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              disabled={isProcessing}
+                              onClick={() => handleApprove(req)}
+                            >
+                              {approveMutation.isPending && approveMutation.variables === req.id
+                                ? '승인 중...'
+                                : '승인'}
+                            </Button>
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {meta ? (
         <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            총 {meta.totalItems}건 — {meta.page} / {meta.totalPages} 페이지
+          <span className="text-neutral-500">
+            총 <span className="tabular font-medium text-neutral-900">{meta.totalItems}</span>건 —{' '}
+            {meta.page} / {meta.totalPages} 페이지
           </span>
           <div className="flex gap-2">
             <Button
               size="sm"
-              variant="outline"
+              variant="secondary"
               onClick={() =>
                 setFilters((prev) => ({ ...prev, page: Math.max(1, (prev.page ?? 1) - 1) }))
               }
@@ -281,7 +290,7 @@ export default function AdminExceptionRequestsPage(): JSX.Element {
             </Button>
             <Button
               size="sm"
-              variant="outline"
+              variant="secondary"
               onClick={() => setFilters((prev) => ({ ...prev, page: (prev.page ?? 1) + 1 }))}
               disabled={meta.page >= meta.totalPages || requestsQuery.isFetching}
             >
@@ -319,10 +328,10 @@ function FilterChip({ label, selected, onClick }: FilterChipProps): JSX.Element 
       onClick={onClick}
       aria-pressed={selected}
       className={cn(
-        'inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+        'inline-flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors',
         selected
-          ? 'border-primary bg-primary/10 text-primary'
-          : 'border-input bg-background text-muted-foreground hover:bg-accent hover:text-foreground',
+          ? 'bg-brand-50 text-brand-700 ring-1 ring-inset ring-brand-500/20'
+          : 'text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900',
       )}
     >
       {label}

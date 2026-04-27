@@ -5,9 +5,11 @@ import interactionPlugin from '@fullcalendar/interaction';
 import FullCalendar from '@fullcalendar/react';
 import timeGridPlugin from '@fullcalendar/timegrid';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
+import { Button } from '@/components/ui/button';
 import type { ApiError } from '@/lib/api/axios';
 import {
   listBookingsByRange,
@@ -59,7 +61,6 @@ const MINE_BORDER_COLOR = '#1f2937'; // gray-800
 
 /**
  * 드래그/리사이즈 시 백엔드 에러코드 → 사용자 토스트 매핑.
- * - 충돌은 사용자가 가장 흔히 마주치는 케이스 — 한 줄로 안내 후 revert.
  */
 const DRAG_ERROR_TOAST: Partial<Record<string, string>> = {
   BOOKING_TIME_CONFLICT: '해당 시간대에 이미 다른 예약이 있어 이동할 수 없습니다.',
@@ -78,19 +79,18 @@ interface VisibleRange {
 export function BookingCalendar(): JSX.Element {
   const calendarRef = useRef<FullCalendar>(null);
   const queryClient = useQueryClient();
-  // 첫 렌더부터 모바일이면 일 뷰. ssr:false 보장이 있어 동기적으로 판단 가능.
   const [view, setView] = useState<CalendarView>(() =>
     isMobileWidth() ? 'timeGridDay' : 'timeGridWeek',
   );
   const [range, setRange] = useState<VisibleRange | null>(null);
+  /** 컨트롤 바 좌측에 표시할 날짜 라벨 — FullCalendar view.title 을 그대로 사용. */
+  const [rangeLabel, setRangeLabel] = useState<string>('');
   const [createSlot, setCreateSlot] = useState<{ start: Date; end: Date } | null>(null);
   const [activeBooking, setActiveBooking] = useState<BookingDto | null>(null);
   /** undefined = 전체. 특정 회의실 선택 시 해당 id만 조회한다. */
   const [selectedRoomId, setSelectedRoomId] = useState<string | undefined>(undefined);
-  // 좌우 스와이프 추적용 ref. ref로 두면 setState 리렌더 없이 터치 이벤트 누적이 가능하다.
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
-  // 드래그/리사이즈 시 호출. 성공 시 invalidate, 실패 시 호출자가 revert를 책임진다.
   const moveOrResizeMutation = useMutation({
     mutationFn: ({ id, values }: { id: string; values: UpdateBookingInput }) =>
       updateBooking(id, values),
@@ -100,7 +100,6 @@ export function BookingCalendar(): JSX.Element {
   });
 
   // 회전/리사이즈로 모바일↔데스크탑 경계를 넘는 경우만 보정.
-  // 데스크탑 → 모바일: 자동으로 일 뷰로. 그 반대는 사용자 선택 존중.
   useEffect(() => {
     const onResize = (): void => {
       if (!isMobileWidth()) return;
@@ -118,7 +117,6 @@ export function BookingCalendar(): JSX.Element {
 
   const rooms = useMemo(() => roomsQuery.data ?? [], [roomsQuery.data]);
   const roomColorMap = useMemo(() => buildRoomColorMap(rooms), [rooms]);
-  // 정렬된 회의실 목록 — 필터 칩과 범례에서 동일 순서로 노출.
   const sortedRooms = useMemo(
     () =>
       [...rooms].sort((a, b) => {
@@ -141,7 +139,6 @@ export function BookingCalendar(): JSX.Element {
     queryKey: ['bookings', queryParams],
     queryFn: () => {
       if (!queryParams) return Promise.resolve<BookingDto[]>([]);
-      // 월 뷰는 한 화면 ~6주(>31일)이므로 chunk 분할 호출이 필요하다.
       return listBookingsByRange(queryParams);
     },
     enabled: queryParams !== null,
@@ -151,10 +148,6 @@ export function BookingCalendar(): JSX.Element {
     () =>
       (bookingsQuery.data ?? []).map((b) => {
         const roomColor = getRoomColor(roomColorMap, b.room.id);
-        // 드래그/리사이즈 허용 조건:
-        //  - 본인 예약
-        //  - 아직 시작 전 (이미 시작했으면 백엔드가 BOOKING_PAST_NOT_EDITABLE)
-        //  - 단일 예약 (반복 회차는 scope 결정이 필요해 모달에서만 처리 — UX 보호)
         const isPast = new Date(b.endAt).getTime() < Date.now();
         const isRecurrence = b.recurrenceId !== null;
         const canEdit = b.isMine && !isPast && !isRecurrence;
@@ -164,14 +157,12 @@ export function BookingCalendar(): JSX.Element {
           start: b.startAt,
           end: b.endAt,
           backgroundColor: roomColor,
-          // 본인 예약은 어두운 테두리로 구분 — 어떤 회의실 색이든 위에서 잘 보인다.
           borderColor: b.isMine ? MINE_BORDER_COLOR : roomColor,
           textColor: '#ffffff',
           classNames: [
             ...(b.isMine ? ['fc-event-mine'] : []),
             ...(canEdit ? ['fc-event-editable'] : ['fc-event-readonly']),
           ],
-          // per-event 권한. FullCalendar 전역 editable=true 위에서 false면 드래그/리사이즈 차단.
           editable: canEdit,
           startEditable: canEdit,
           durationEditable: canEdit,
@@ -186,13 +177,18 @@ export function BookingCalendar(): JSX.Element {
     calendarRef.current?.getApi().changeView(next);
   };
 
-  /**
-   * 좌우 스와이프 → 이전/다음 기간 이동.
-   * - 빠른 스와이프(<600ms)만 인식 — 길게 누른 동작은 FullCalendar가 select/drag로 사용.
-   * - 세로 변위가 크면 무시 — 페이지 세로 스크롤과 충돌 방지.
-   * - FullCalendar는 longPressDelay(기본 1000ms) 후에야 select가 트리거되므로
-   *   600ms 미만 스와이프는 슬롯 선택과 충돌하지 않는다.
-   */
+  const goPrev = (): void => calendarRef.current?.getApi().prev();
+  const goNext = (): void => calendarRef.current?.getApi().next();
+  const goToday = (): void => calendarRef.current?.getApi().today();
+
+  /** 새 예약 버튼 — 가장 가까운 다음 15분 시작, 1시간 슬롯 기본 */
+  const openCreateNow = (): void => {
+    const start = ceilToQuarter(new Date());
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
+    setCreateSlot({ start, end });
+  };
+
+  // ----- 좌우 스와이프 (touch) → prev/next 이동 -----
   const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>): void => {
     const t = e.touches[0];
     if (e.touches.length !== 1 || !t) {
@@ -214,82 +210,127 @@ export function BookingCalendar(): JSX.Element {
     if (Math.abs(dx) < SWIPE_HORIZONTAL_MIN_PX) return;
     const api = calendarRef.current?.getApi();
     if (!api) return;
-    // 좌→우 스와이프(dx>0)는 이전 기간, 우→좌(dx<0)는 다음 기간 — Google Calendar 동일.
     if (dx > 0) api.prev();
     else api.next();
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex gap-1" role="tablist" aria-label="캘린더 뷰 전환">
-          {(Object.keys(VIEW_LABELS) as CalendarView[]).map((v) => (
-            <button
-              key={v}
-              type="button"
-              role="tab"
-              aria-selected={view === v}
-              onClick={() => switchView(v)}
-              // 모바일 터치 타겟 44px 보장(min-h/min-w). 데스크탑은 시각상 sm-h-9 유지.
-              className={`inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md px-3 text-sm font-medium transition-colors sm:min-h-[36px] sm:min-w-0 ${
-                view === v
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted text-muted-foreground hover:bg-accent hover:text-foreground'
-              }`}
-            >
-              {VIEW_LABELS[v]}
-            </button>
-          ))}
+    <div>
+      {/* === 페이지 헤더 === */}
+      <div className="mb-6 flex items-end justify-between gap-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-neutral-500">캘린더</p>
+          <h1 className="mt-1 text-h1 font-semibold tracking-tight text-neutral-900">
+            {rangeLabel || '예약 현황'}
+          </h1>
         </div>
-        <div className="flex items-center gap-3 text-sm text-muted-foreground">
-          <span
-            className="rounded-full border border-input bg-muted/40 px-2 py-0.5 text-xs"
-            title="모든 예약 시간은 한국 표준시(Asia/Seoul, UTC+9) 기준입니다."
-          >
-            한국 표준시 · UTC+9
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span
-              className="h-3 w-3 rounded border-2"
-              style={{ borderColor: MINE_BORDER_COLOR, backgroundColor: '#e5e7eb' }}
-            />
-            내 예약
-          </span>
+        <div className="flex items-center gap-2">
+          <Button variant="default" size="default" onClick={openCreateNow}>
+            <Plus className="h-4 w-4" strokeWidth={2.25} />새 예약
+          </Button>
         </div>
       </div>
 
-      <RoomFilterChips
-        rooms={sortedRooms}
-        roomColorMap={roomColorMap}
-        selectedRoomId={selectedRoomId}
-        onSelect={setSelectedRoomId}
-        loading={roomsQuery.isLoading}
-      />
+      {/* === 컨트롤 바 === */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-white p-3 shadow-xs">
+        {/* 좌측 — 날짜 네비게이션 */}
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={goPrev}
+            aria-label="이전"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-neutral-600 transition-colors hover:bg-neutral-100"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={goToday}
+            className="inline-flex h-8 items-center rounded-md border border-neutral-200 bg-white px-3 text-sm font-semibold text-neutral-700 transition-colors hover:bg-neutral-50"
+          >
+            오늘
+          </button>
+          <button
+            type="button"
+            onClick={goNext}
+            aria-label="다음"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-neutral-600 transition-colors hover:bg-neutral-100"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
 
+        {/* 중앙 — 회의실 Pill 필터 */}
+        <RoomPillFilter
+          rooms={sortedRooms}
+          roomColorMap={roomColorMap}
+          selectedRoomId={selectedRoomId}
+          onSelect={setSelectedRoomId}
+          loading={roomsQuery.isLoading}
+        />
+
+        {/* 우측 — 뷰 전환 (Segmented Control) */}
+        <div
+          role="tablist"
+          aria-label="캘린더 뷰 전환"
+          className="inline-flex items-center gap-0.5 rounded-md bg-neutral-100 p-0.5"
+        >
+          {(Object.keys(VIEW_LABELS) as CalendarView[]).map((v) => {
+            const active = view === v;
+            return (
+              <button
+                key={v}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => switchView(v)}
+                className={cn(
+                  'inline-flex h-8 min-w-[44px] items-center justify-center rounded px-3 text-sm font-medium transition-all',
+                  active
+                    ? 'bg-white text-neutral-900 shadow-xs'
+                    : 'text-neutral-500 hover:text-neutral-900',
+                )}
+              >
+                {VIEW_LABELS[v]}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 본인 예약/타임존 안내 — 컨트롤 바 아래 작은 메타 줄 */}
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-3 text-xs text-neutral-500">
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full border border-neutral-200 bg-white px-2 py-0.5"
+          title="모든 예약 시간은 한국 표준시(Asia/Seoul, UTC+9) 기준입니다."
+        >
+          한국 표준시 · UTC+9
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            aria-hidden
+            className="h-3 w-3 rounded border-2"
+            style={{ borderColor: MINE_BORDER_COLOR, backgroundColor: '#e5e7eb' }}
+          />
+          내 예약
+        </span>
+      </div>
+
+      {/* === 캘린더 본체 === */}
       <div
-        className="rounded-lg border bg-card p-2 sm:p-4"
+        className="overflow-hidden rounded-xl border border-neutral-200 bg-white p-2 shadow-xs sm:p-4"
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
-        // 스와이프 중 의도치 않은 새로고침/뒤로가기 제스처(브라우저 기본) 차단.
         style={{ touchAction: 'pan-y' }}
       >
         <FullCalendar
           ref={calendarRef}
           plugins={[timeGridPlugin, dayGridPlugin, interactionPlugin]}
           initialView={view}
-          headerToolbar={{
-            left: 'prev,next today',
-            center: 'title',
-            right: '', // 뷰 토글은 위쪽 커스텀 버튼으로.
-          }}
+          // 자체 헤더 비활성 — 위쪽 커스텀 컨트롤 바로 모두 대체.
+          headerToolbar={false}
           locale="ko"
           buttonText={{ today: '오늘' }}
-          // 사용자 브라우저의 로컬 시간대로 동작 — 사내 사용자 전원이 KST 가정.
-          // FullCalendar v6는 named timezone(예: "Asia/Seoul")을 정확히 다루려면
-          // @fullcalendar/luxon 또는 @fullcalendar/moment-timezone 플러그인이 필요하다.
-          // 플러그인 없이 timeZone="Asia/Seoul"을 지정하면 fake-UTC 모드로 빠져
-          // 콜백의 Date.getUTCHours()가 표시된 KST 시간을 그대로 담아 토하는 문제가 있어,
-          // 슬롯 클릭/예약 표시 시각이 9시간씩 어긋났다.
           allDaySlot={false}
           nowIndicator
           weekends
@@ -300,13 +341,10 @@ export function BookingCalendar(): JSX.Element {
           height="auto"
           selectable
           selectMirror
-          // 드래그/리사이즈 전역 활성화. 이벤트 단위로 editable=false 지정해 본인 외/과거/회차 차단.
           editable
           eventStartEditable
           eventDurationEditable
-          // 15분 단위 스냅 — 백엔드 BOOKING_TIME_NOT_QUARTER 사전 차단.
           snapDuration="00:15:00"
-          // 슬롯 선택 시간이 15분 미만이면 자동으로 1시간으로 보정 — UX 보호.
           select={(arg) => {
             const start = ceilToQuarter(arg.start);
             const minEnd = new Date(start.getTime() + 60 * 60 * 1000);
@@ -314,7 +352,6 @@ export function BookingCalendar(): JSX.Element {
             setCreateSlot({ start, end });
             calendarRef.current?.getApi().unselect();
           }}
-          // dayGridMonth에서는 dateClick으로 진입 — 기본 1시간 슬롯 제공.
           dateClick={(arg) => {
             if (view !== 'dayGridMonth') return;
             const start = ceilToQuarter(arg.date);
@@ -375,12 +412,9 @@ export function BookingCalendar(): JSX.Element {
             const booking = arg.event.extendedProps.booking as BookingDto | undefined;
             const isRecurrence =
               booking?.recurrenceId !== null && booking?.recurrenceId !== undefined;
-            // 월 뷰는 색 블록이 아닌 텍스트 형태로 렌더되어 회의실 색이 안 보인다.
-            // 시간/제목 앞에 작은 색 점을 붙여 회의실 식별성을 살린다.
-            // 시간/일 뷰는 배경 자체가 회의실 색이라 점이 중복돼 생략.
             const isMonthView = arg.view.type === 'dayGridMonth';
             return (
-              <div className="flex items-center gap-1 overflow-hidden px-1 text-xs">
+              <div className="flex items-center gap-1 overflow-hidden px-1 text-[0.8125rem] leading-snug">
                 {isMonthView ? (
                   <span
                     aria-hidden
@@ -388,7 +422,9 @@ export function BookingCalendar(): JSX.Element {
                     style={{ backgroundColor: arg.event.backgroundColor }}
                   />
                 ) : null}
-                {arg.timeText ? <span className="shrink-0 font-medium">{arg.timeText}</span> : null}
+                {arg.timeText ? (
+                  <span className="shrink-0 font-medium tabular">{arg.timeText}</span>
+                ) : null}
                 {isRecurrence ? (
                   <span aria-label="반복 예약" title="반복 예약" className="shrink-0">
                     ↻
@@ -401,6 +437,8 @@ export function BookingCalendar(): JSX.Element {
           datesSet={(arg) => {
             // 보이는 범위가 바뀔 때마다 GET /bookings를 새로 호출.
             setRange({ start: arg.start, end: arg.end });
+            // 컨트롤 바 좌측 라벨에 사용할 제목.
+            setRangeLabel(arg.view.title);
           }}
           events={events}
         />
@@ -423,7 +461,7 @@ export function BookingCalendar(): JSX.Element {
   );
 }
 
-interface RoomFilterChipsProps {
+interface RoomPillFilterProps {
   rooms: RoomDto[];
   roomColorMap: Map<string, string>;
   selectedRoomId: string | undefined;
@@ -431,32 +469,31 @@ interface RoomFilterChipsProps {
   loading: boolean;
 }
 
-function RoomFilterChips({
+/**
+ * Pill 형태 회의실 필터 — 컨트롤 바 중앙에 위치 (§5.4).
+ * 활성 시 brand-50 배경 + brand-700 텍스트, 비활성은 회의실 컬러 도트만 노출.
+ */
+function RoomPillFilter({
   rooms,
   roomColorMap,
   selectedRoomId,
   onSelect,
   loading,
-}: RoomFilterChipsProps): JSX.Element {
+}: RoomPillFilterProps): JSX.Element {
   const activeRooms = rooms.filter((r) => r.isActive);
 
   return (
-    <div
-      role="toolbar"
-      aria-label="회의실 필터"
-      className="flex flex-wrap items-center gap-2 rounded-md border bg-card p-2"
-    >
-      <span className="px-1 text-xs font-medium text-muted-foreground">회의실</span>
-      <FilterChip
+    <div role="toolbar" aria-label="회의실 필터" className="flex flex-wrap items-center gap-1.5">
+      <RoomPill
         label="전체"
         selected={selectedRoomId === undefined}
         onClick={() => onSelect(undefined)}
       />
       {loading && rooms.length === 0 ? (
-        <span className="text-xs text-muted-foreground">불러오는 중...</span>
+        <span className="text-xs text-neutral-400">불러오는 중...</span>
       ) : null}
       {activeRooms.map((room) => (
-        <FilterChip
+        <RoomPill
           key={room.id}
           label={room.name}
           color={getRoomColor(roomColorMap, room.id)}
@@ -468,29 +505,32 @@ function RoomFilterChips({
   );
 }
 
-interface FilterChipProps {
+interface RoomPillProps {
   label: string;
   color?: string;
   selected: boolean;
   onClick: () => void;
 }
 
-function FilterChip({ label, color, selected, onClick }: FilterChipProps): JSX.Element {
+function RoomPill({ label, color, selected, onClick }: RoomPillProps): JSX.Element {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-pressed={selected}
-      // 모바일 44px 터치 타겟. 데스크탑은 컴팩트 유지.
       className={cn(
-        'inline-flex min-h-[44px] items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors sm:min-h-[28px]',
+        'inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-sm font-medium transition-colors',
         selected
-          ? 'border-primary bg-primary/10 text-primary'
-          : 'border-input bg-background text-muted-foreground hover:bg-accent hover:text-foreground',
+          ? 'bg-brand-50 text-brand-700 ring-1 ring-inset ring-brand-500/20'
+          : 'text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900',
       )}
     >
       {color ? (
-        <span aria-hidden className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
+        <span
+          aria-hidden
+          className="h-2 w-2 shrink-0 rounded-full"
+          style={{ backgroundColor: color }}
+        />
       ) : null}
       {label}
     </button>

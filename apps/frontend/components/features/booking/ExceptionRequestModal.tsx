@@ -2,6 +2,7 @@
 
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
@@ -9,7 +10,9 @@ import { toast } from 'sonner';
 
 import { FieldError } from '@/components/features/auth/FieldError';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
 import { Modal } from '@/components/ui/modal';
+import { Textarea } from '@/components/ui/textarea';
 import type { ApiError } from '@/lib/api/axios';
 import {
   createExceptionRequest,
@@ -44,13 +47,6 @@ const ERROR_TOAST: Partial<Record<string, string>> = {
   INVALID_TIME_RANGE: '종료 시간은 시작 시간보다 이후여야 합니다.',
 };
 
-/**
- * 예외 신청 사유 입력 모달.
- *
- * - 시간/회의실/제목은 예약 폼 값을 그대로 받아 표시만(읽기 전용)
- * - 사용자는 reason 만 입력 → POST /exception-requests
- * - 성공 시 /my/requests 로 이동 (toast로 안내)
- */
 export function ExceptionRequestModal({ open, onClose, preset }: Props): JSX.Element {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -87,7 +83,6 @@ export function ExceptionRequestModal({ open, onClose, preset }: Props): JSX.Ele
   const mutation = useMutation({
     mutationFn: createExceptionRequest,
     onSuccess: (result) => {
-      // 신청 시점 충돌 정보가 있으면 안내 — 승인 시 다시 검증되므로 차단은 아님.
       const conflictHint =
         result.conflicts.length > 0
           ? ` 신청 시점 기준 ${result.conflicts.length}건의 충돌이 있습니다 — 검토 시 다시 확인됩니다.`
@@ -113,62 +108,65 @@ export function ExceptionRequestModal({ open, onClose, preset }: Props): JSX.Ele
 
   const serverError = errors.root?.serverError?.message;
 
+  const footer = (
+    <>
+      <Button type="button" variant="secondary" onClick={onClose} disabled={mutation.isPending}>
+        취소
+      </Button>
+      <Button type="submit" form="exception-request-form" disabled={mutation.isPending}>
+        {mutation.isPending ? '신청 중...' : '예외 신청'}
+      </Button>
+    </>
+  );
+
   return (
     <Modal
       open={open}
       onClose={onClose}
       title="예외 신청"
       description="관리자 승인이 필요한 예약 사유를 작성해 주세요."
+      footer={footer}
     >
-      <form onSubmit={onSubmit} className="space-y-4" noValidate>
+      <form id="exception-request-form" onSubmit={onSubmit} className="space-y-5" noValidate>
         {serverError ? (
           <div
             role="alert"
-            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            className="flex items-start gap-2 rounded-lg border border-danger-500/20 bg-danger-50 px-3 py-2.5 text-sm text-danger-700"
           >
-            {serverError}
+            <AlertTriangle className="h-4 w-4 shrink-0 translate-y-0.5" />
+            <span>{serverError}</span>
           </div>
         ) : null}
 
-        <dl className="grid grid-cols-[5rem_1fr] gap-y-2 rounded-md border border-input bg-muted/30 p-3 text-sm">
-          <dt className="text-muted-foreground">회의실</dt>
-          <dd>{preset.roomName ?? '회의실'}</dd>
-          <dt className="text-muted-foreground">제목</dt>
-          <dd>{preset.title || '(미입력)'}</dd>
-          <dt className="text-muted-foreground">날짜</dt>
-          <dd>{formatKstDateTime(preset.startAt)}</dd>
-          <dt className="text-muted-foreground">시간</dt>
-          <dd>{formatKstTimeRange(preset.startAt, preset.endAt)}</dd>
+        <dl className="grid grid-cols-[5rem_1fr] gap-y-2 rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-sm">
+          <dt className="text-neutral-500">회의실</dt>
+          <dd className="text-neutral-900">{preset.roomName ?? '회의실'}</dd>
+          <dt className="text-neutral-500">제목</dt>
+          <dd className="text-neutral-900">{preset.title || '(미입력)'}</dd>
+          <dt className="text-neutral-500">날짜</dt>
+          <dd className="tabular text-neutral-900">{formatKstDateTime(preset.startAt)}</dd>
+          <dt className="text-neutral-500">시간</dt>
+          <dd className="tabular text-neutral-900">
+            {formatKstTimeRange(preset.startAt, preset.endAt)}
+          </dd>
         </dl>
 
         <div>
-          <label htmlFor="exception-reason" className="text-sm font-medium">
-            신청 사유 <span className="text-destructive">*</span>
-          </label>
-          <p className="mt-0.5 text-xs text-muted-foreground">
+          <Label htmlFor="exception-reason">
+            신청 사유 <span className="text-danger-500">*</span>
+          </Label>
+          <p className="mb-1.5 text-xs text-neutral-500">
             10자 이상으로, 4시간 초과/과거 시점이 필요한 사유를 구체적으로 작성해 주세요.
           </p>
-          <textarea
+          <Textarea
             id="exception-reason"
             placeholder="예: 외부 컨설팅 업체와의 종일 워크샵으로 9시간 사용이 필요합니다."
-            className={cn(
-              'mt-1 flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              errors.reason && 'border-destructive',
-            )}
+            className={cn('min-h-[120px]', errors.reason && 'border-danger-500')}
             maxLength={2000}
             aria-invalid={Boolean(errors.reason)}
             {...register('reason')}
           />
           <FieldError message={errors.reason?.message} />
-        </div>
-
-        <div className="flex justify-end gap-2 pt-2">
-          <Button type="button" variant="outline" onClick={onClose} disabled={mutation.isPending}>
-            취소
-          </Button>
-          <Button type="submit" disabled={mutation.isPending}>
-            {mutation.isPending ? '신청 중...' : '예외 신청'}
-          </Button>
         </div>
       </form>
     </Modal>

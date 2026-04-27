@@ -2,11 +2,28 @@ import { forwardRef, type HTMLAttributes } from 'react';
 
 import { cn } from '@/lib/utils';
 
-export const Card = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
-  ({ className, ...props }, ref) => (
+interface CardProps extends HTMLAttributes<HTMLDivElement> {
+  /** 클릭/호버 가능한 카드 — §6.2 (shadow ↑ + border 강조 + 살짝 떠오름) */
+  interactive?: boolean;
+}
+
+/**
+ * Card (docs/07-design.md §4.3 + §6.2)
+ *
+ * - radius-xl, border-neutral-200, shadow-xs 가 기본 (절제된 깊이)
+ * - interactive=true 면 호버 시 shadow-sm + border-neutral-300 + -translate-y-0.5
+ *   → 클릭 가능함을 시각적으로 신호하되 scale 변경은 사용하지 않음.
+ */
+export const Card = forwardRef<HTMLDivElement, CardProps>(
+  ({ className, interactive, ...props }, ref) => (
     <div
       ref={ref}
-      className={cn('rounded-lg border bg-card text-card-foreground shadow-sm', className)}
+      className={cn(
+        'rounded-xl border border-neutral-200 bg-white text-neutral-900 shadow-xs',
+        interactive &&
+          'cursor-pointer transition-all duration-200 hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-sm',
+        className,
+      )}
       {...props}
     />
   ),
@@ -24,7 +41,7 @@ export const CardTitle = forwardRef<HTMLHeadingElement, HTMLAttributes<HTMLHeadi
   ({ className, ...props }, ref) => (
     <h3
       ref={ref}
-      className={cn('text-2xl font-semibold leading-none tracking-tight', className)}
+      className={cn('text-h3 font-semibold leading-none tracking-tight', className)}
       {...props}
     />
   ),
@@ -35,7 +52,7 @@ export const CardDescription = forwardRef<
   HTMLParagraphElement,
   HTMLAttributes<HTMLParagraphElement>
 >(({ className, ...props }, ref) => (
-  <p ref={ref} className={cn('text-sm text-muted-foreground', className)} {...props} />
+  <p ref={ref} className={cn('text-sm text-neutral-500', className)} {...props} />
 ));
 CardDescription.displayName = 'CardDescription';
 
