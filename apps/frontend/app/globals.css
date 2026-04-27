@@ -2,57 +2,148 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+ * Pretendard (한글 가변 폰트) — CDN.
+ * Geist Sans/Mono 은 layout.tsx 에서 next/font 로 주입되어 --font-geist-sans / --font-geist-mono 변수가 노출된다.
+ * ------------------------------------------------------------------------- */
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css');
+
 @layer base {
   :root {
+    /* === Brand (docs/07-design.md §1.2) === */
+    --brand-50: #eff4ff;
+    --brand-100: #dbe5fe;
+    --brand-200: #bfd0fd;
+    --brand-300: #93b0fa;
+    --brand-400: #6087f5;
+    --brand-500: #3b63ee;
+    --brand-600: #2748d8;
+    --brand-700: #1f37af;
+    --brand-800: #1e3289;
+    --brand-900: #1e2d6b;
+
+    /* === Neutral (Slate) === */
+    --neutral-0: #ffffff;
+    --neutral-50: #f8fafc;
+    --neutral-100: #f1f5f9;
+    --neutral-200: #e2e8f0;
+    --neutral-300: #cbd5e1;
+    --neutral-400: #94a3b8;
+    --neutral-500: #64748b;
+    --neutral-600: #475569;
+    --neutral-700: #334155;
+    --neutral-800: #1e293b;
+    --neutral-900: #0f172a;
+
+    /* === Semantic === */
+    --success-50: #ecfdf5;
+    --success-500: #10b981;
+    --success-700: #047857;
+
+    --warning-50: #fffbeb;
+    --warning-500: #f59e0b;
+    --warning-700: #b45309;
+
+    --danger-50: #fef2f2;
+    --danger-500: #ef4444;
+    --danger-700: #b91c1c;
+
+    /* === 캘린더(회의실별) — 시각적으로 명확히 구분되는 10색 === */
+    --room-1: #3b63ee;
+    --room-2: #14b8a6;
+    --room-3: #f59e0b;
+    --room-4: #ec4899;
+    --room-5: #8b5cf6;
+    --room-6: #06b6d4;
+    --room-7: #84cc16;
+    --room-8: #f43f5e;
+    --room-9: #6366f1;
+    --room-10: #a855f7;
+
+    /* === Surface === */
+    --surface-bg: var(--neutral-50);
+    --surface-card: var(--neutral-0);
+    --surface-elevated: var(--neutral-0);
+    --surface-overlay: rgba(15, 23, 42, 0.4);
+
+    /* === Shadow (절제 — 깊이는 색조로) === */
+    --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+    --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+    --shadow-md: 0 4px 6px -2px rgba(15, 23, 42, 0.06), 0 2px 4px -2px rgba(15, 23, 42, 0.04);
+    --shadow-lg: 0 10px 15px -3px rgba(15, 23, 42, 0.08), 0 4px 6px -4px rgba(15, 23, 42, 0.04);
+    --shadow-xl: 0 20px 25px -5px rgba(15, 23, 42, 0.1), 0 8px 10px -6px rgba(15, 23, 42, 0.04);
+
+    /* === Radius === */
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --radius-full: 9999px;
+
+    /* === Font stack ===
+     * Pretendard 가 한글을, Geist Sans 가 영문/숫자를 담당하는 페어링.
+     * --font-geist-sans / --font-geist-mono 는 layout.tsx 에서 next/font 가 주입.
+     */
+    --font-sans:
+      'Pretendard Variable', var(--font-geist-sans), -apple-system, BlinkMacSystemFont, 'Segoe UI',
+      sans-serif;
+    --font-mono:
+      var(--font-geist-mono), 'SF Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
     /* ------------------------------------------------------------------
-     * 브랜드 메인 컬러 (PRD UX-002)
-     * - 기본값: #1A73E8
-     * - 런타임 오버라이드: layout.tsx에서 NEXT_PUBLIC_PRIMARY_COLOR 주입
+     * 브랜드 메인 컬러 (PRD UX-002 — NEXT_PUBLIC_PRIMARY_COLOR 호환)
+     * 기본값을 design system brand-500 으로 정렬. layout.tsx 가 런타임에 덮어쓸 수 있다.
      * ------------------------------------------------------------------ */
-    --color-primary: #1a73e8;
+    --color-primary: var(--brand-500);
     --color-primary-foreground: #ffffff;
 
     /* ------------------------------------------------------------------
-     * shadcn/ui 표준 토큰 (HSL 트리플릿)
+     * shadcn/ui 표준 토큰 — 위 디자인 토큰과 의미적으로 정렬.
+     * (HSL 트리플릿 형식 유지로 기존 컴포넌트 호환)
      * ------------------------------------------------------------------ */
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --background: 210 40% 98%; /* neutral-50 */
+    --foreground: 222 47% 11%; /* neutral-900 */
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --popover-foreground: 222 47% 11%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 210 40% 96%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 32% 91%; /* neutral-200 */
+    --input: 214 32% 91%;
+    --ring: 226 84% 58%; /* brand-500 */
     --radius: 0.5rem;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
+    /* Phase 2 이후 본격 정의 — 변수 슬롯만 유지 */
+    --surface-bg: #0b1120;
+    --surface-card: #131c2e;
+    --surface-elevated: #1a2438;
+
+    --background: 222 47% 8%;
     --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
+    --card: 222 35% 13%;
     --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
+    --popover: 222 35% 13%;
     --popover-foreground: 210 40% 98%;
-    --secondary: 217.2 32.6% 17.5%;
+    --secondary: 217 33% 17%;
     --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 33% 17%;
     --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
+    --destructive: 0 63% 31%;
     --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --border: 217 33% 22%;
+    --input: 217 33% 22%;
+    --ring: 226 84% 58%;
   }
 
   * {
@@ -61,73 +152,213 @@
 
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-sans);
     font-feature-settings:
       'rlig' 1,
-      'calt' 1;
+      'calt' 1,
+      'ss01' 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* 큰 제목은 살짝 타이트하게, 라벨은 트래킹 — §2.3 */
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.02em;
+  }
+}
+
+@layer utilities {
+  /* 등폭 숫자 — 본문(Pretendard/Geist Sans) 안에서 숫자 자릿수만 정렬.
+     mono 폰트를 강제하면 한글 날짜("4월 27일 (월) 14:30")가 본문과 따로 놀기 때문에
+     font-family 는 상속을 유지하고, tabular-nums 로 자릿수만 정렬한다.
+     캘린더 좌측 시간 라벨처럼 진짜 mono 가 필요한 곳은 별도 selector 에서 명시. */
+  .tabular {
+    font-feature-settings: 'tnum';
+    font-variant-numeric: tabular-nums;
   }
 }
 
 /* ---------------------------------------------------------------------------
- * FullCalendar 커스텀 (Google Calendar 풍 다듬기)
- *  - 주말 칸/헤더에 옅은 배경 + 글자색 강조
- *  - 본인 편집 가능한 이벤트는 hover 시 시각 신호 (커서/외곽선)
+ * FullCalendar 커스텀 — 디자인 토큰(§5.4)에 맞춰 다듬기.
+ *
+ * 주의: FullCalendar v6 는 런타임에 unlayered <style> 을 head 에 주입한다.
+ * 따라서 우리 커스텀은 @layer 밖(언레이어)에 두고, 충돌 가능성이 있는
+ * 핵심 선언에는 !important 를 명시해 주입 순서/특이도 양쪽으로 안전하게 우선순위를 잡는다.
  * ------------------------------------------------------------------------- */
-@layer components {
-  /* 토요일 — 옅은 파랑 */
-  .fc .fc-day-sat {
-    background-color: hsl(214 100% 98%);
-  }
-  .fc .fc-col-header-cell.fc-day-sat .fc-col-header-cell-cushion {
-    color: hsl(220 80% 45%);
-  }
 
-  /* 일요일 — 옅은 빨강 */
-  .fc .fc-day-sun {
-    background-color: hsl(0 100% 98%);
-  }
-  .fc .fc-col-header-cell.fc-day-sun .fc-col-header-cell-cushion {
-    color: hsl(0 70% 50%);
-  }
+/* 격자 보더 — 셀 분할이 또렷하게 보이도록 neutral-200 사용
+   (오늘/토요일/일요일 같은 옅은 배경색 위에서도 슬롯 경계가 살아남는다) */
+.fc-theme-standard .fc-scrollgrid,
+.fc-theme-standard td,
+.fc-theme-standard th {
+  border-color: var(--neutral-200);
+}
+.fc-theme-standard .fc-scrollgrid {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
 
-  /* 오늘 칸 강조는 FC 기본 .fc-day-today를 그대로 두고 살짝 톤만 보강 */
-  .fc .fc-day-today {
-    background-color: hsl(45 100% 96%) !important;
-  }
+/* 헤더(요일/날짜) */
+.fc .fc-col-header-cell-cushion {
+  padding: 8px 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--neutral-500);
+  text-decoration: none !important;
+}
+.fc .fc-col-header-cell {
+  background-color: var(--neutral-50);
+}
 
-  /* 본인이 드래그 가능한 이벤트는 grab 커서로 신호 */
-  .fc .fc-event.fc-event-editable {
-    cursor: grab;
-  }
-  .fc .fc-event.fc-event-editable:active {
-    cursor: grabbing;
-  }
-  /* 타인/과거/회차 이벤트는 클릭만 가능 */
-  .fc .fc-event.fc-event-readonly {
-    cursor: pointer;
-  }
+/* 시간 라벨 (좌측 시간) — 등폭 + 약한 색. 폭은 FullCalendar 기본(컨텐츠 자동 크기) 사용.
+   FullCalendar 는 기본적으로 cushion 을 우측·상단(LTR text-align: right) 으로 두기 때문에,
+   셀(td) 의 vertical-align 과 frame 의 flex 양쪽으로 가로/세로 가운데 정렬을 강제한다.
+   FC 가 런타임에 head 로 주입하는 unlayered <style> 보다 우선시키기 위해 !important 사용. */
+.fc .fc-timegrid-axis,
+.fc .fc-timegrid-slot-label {
+  vertical-align: middle !important;
+  text-align: center !important;
+}
+.fc .fc-timegrid-axis-frame,
+.fc .fc-timegrid-slot-label-frame,
+.fc-direction-ltr .fc-timegrid-axis-frame,
+.fc-direction-ltr .fc-timegrid-slot-label-frame {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+  height: 100% !important;
+  width: 100% !important;
+}
+.fc .fc-timegrid-axis-cushion,
+.fc .fc-timegrid-slot-label-cushion {
+  font-family: var(--font-mono) !important;
+  font-size: 0.75rem !important;
+  font-variant-numeric: tabular-nums;
+  color: var(--neutral-400) !important;
+  padding: 0 6px !important;
+  margin: 0 !important;
+  text-align: center !important;
+}
 
-  /* ----- 모바일 터치 타겟 보강 (sm 미만) -----
-   * FullCalendar prev/next/today 버튼이 기본 ~32px라 iOS HIG 44px에 못 미친다.
-   * 모바일에서만 키우고 데스크탑은 기존 컴팩트 톤 유지.
-   */
-  @media (max-width: 639.98px) {
-    .fc .fc-button {
-      min-height: 44px;
-      min-width: 44px;
-      padding-inline: 0.75rem;
-    }
-    /* 모바일에서 헤더 타이틀이 길면 줄어들도록 — prev/next 버튼이 잘리지 않게. */
-    .fc .fc-toolbar-title {
-      font-size: 1rem;
-    }
-    .fc .fc-toolbar.fc-header-toolbar {
-      flex-wrap: wrap;
-      gap: 0.5rem;
-      margin-bottom: 0.75rem;
-    }
-    /* 슬롯 라벨 폭 축소 — 좁은 화면에서 시간 표시 영역이 너무 넓어지는 문제 보정. */
-    .fc .fc-timegrid-slot-label {
-      font-size: 0.7rem;
-    }
+/* 좌측 시간축의 minor 라벨 셀만 보더 제거 — 1시간이 한 셀처럼 보임.
+   우측 lane(일/주 영역) 의 minor 셀은 건드리지 않아 15분 분할이 그대로 보인다. */
+.fc .fc-timegrid-slot-label.fc-timegrid-slot-minor,
+.fc tr.fc-timegrid-slot-minor > .fc-timegrid-slot-label {
+  border-top-color: transparent !important;
+  border-top-style: none !important;
+}
+
+/* 이벤트 블록 — 좌우 여백 제거해 컬럼 너비에 맞춤 */
+.fc .fc-timegrid-col-events {
+  margin: 0 !important;
+}
+.fc .fc-timegrid-event-harness {
+  margin-right: 0 !important;
+}
+.fc .fc-timegrid-event {
+  margin: 0 !important;
+}
+
+/* 토요일 — 미세한 파랑 */
+.fc .fc-day-sat {
+  background-color: hsl(214 100% 99%);
+}
+.fc .fc-col-header-cell.fc-day-sat .fc-col-header-cell-cushion {
+  color: hsl(220 80% 45%);
+}
+
+/* 일요일 — 미세한 빨강 */
+.fc .fc-day-sun {
+  background-color: hsl(0 100% 99%);
+}
+.fc .fc-col-header-cell.fc-day-sun .fc-col-header-cell-cushion {
+  color: hsl(0 70% 50%);
+}
+
+/* 오늘 칸 — warning-50(연한 앰버) 으로. 토요일(연파랑)과 색상이 겹치지 않게
+   brand-50 에서 변경. 충분히 옅어 격자선(neutral-200)이 그대로 보인다. */
+.fc .fc-day-today {
+  background-color: var(--warning-50) !important;
+}
+.fc .fc-col-header-cell.fc-day-today .fc-col-header-cell-cushion {
+  color: var(--warning-700);
+}
+
+/* now indicator (현재 시각 빨간 줄) — danger 토큰 */
+.fc .fc-timegrid-now-indicator-line {
+  border-color: var(--danger-500);
+}
+.fc .fc-timegrid-now-indicator-arrow {
+  border-color: var(--danger-500);
+  background-color: var(--danger-500);
+}
+
+/* 이벤트 블록 — 깨끗한 색상 블록(좌측 강조 라인/그림자 제거) */
+.fc .fc-event {
+  border-radius: var(--radius-sm);
+  border: 0 !important;
+  box-shadow: none !important;
+}
+.fc .fc-event:hover {
+  filter: brightness(1.05);
+}
+
+/* 본인 예약 강조 — 좌측 라인 대신 inset ring 으로 표현해 그림자처럼 보이지 않게 */
+.fc .fc-event.fc-event-mine {
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.85) !important;
+}
+
+/* 본인이 드래그 가능한 이벤트는 grab 커서 */
+.fc .fc-event.fc-event-editable {
+  cursor: grab;
+}
+.fc .fc-event.fc-event-editable:active {
+  cursor: grabbing;
+}
+.fc .fc-event.fc-event-readonly {
+  cursor: pointer;
+}
+
+/* 월 뷰 — 일자 숫자 + 헤더와 톤 통일 */
+.fc .fc-daygrid-day-number {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--neutral-700);
+  padding: 4px 6px;
+}
+.fc .fc-daygrid-day-top {
+  flex-direction: row;
+}
+
+/* 월 뷰 셀 — 한 칸이 충분히 숨 쉴 수 있도록 최소 높이 보장. */
+.fc-dayGridMonth-view .fc-daygrid-day-frame {
+  min-height: 7rem;
+}
+
+/* 월 뷰의 +N more 링크 */
+.fc .fc-daygrid-more-link {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--neutral-600);
+}
+
+/* ----- 모바일 보강 (sm 미만) ----- */
+@media (max-width: 639.98px) {
+  .fc .fc-timegrid-axis-cushion,
+  .fc .fc-timegrid-slot-label-cushion {
+    font-size: 0.6875rem !important;
+    padding: 0 4px !important;
+  }
+  .fc .fc-daygrid-day-number {
+    font-size: 0.75rem;
+  }
+  .fc .fc-col-header-cell-cushion {
+    font-size: 0.75rem;
+  }
+  .fc-dayGridMonth-view .fc-daygrid-day-frame {
+    min-height: 5rem;
   }
 }

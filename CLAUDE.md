@@ -15,12 +15,15 @@
 - **주요 기능**: 인증(이메일 인증 코드), 예약 CRUD, 반복 예약(RRULE), 관리자 예외 승인
 
 상세는 `docs/` 디렉토리를 참고:
+
 - `docs/01-prd.md` — 요구사항
 - `docs/02-db-design.md` — DB 설계
 - `docs/03-api-spec.md` — API 명세
 - `docs/04-local-dev-setup.md` — 로컬 환경
 - `docs/05-roadmap.md` — 개발 로드맵
 - `docs/06-test-cases.md` — 테스트 케이스
+- `docs/07-design.md` — 디자인 가이드 (컬러, 타이포, 컴포넌트 토큰)
+- `docs/08-design-references.md` — 화면별 참고 사이트
 
 ---
 
@@ -29,6 +32,7 @@
 다음 규칙은 모든 작업에서 우선합니다. 자세한 내용은 `.claude/rules/` 하위 파일 참조.
 
 ### 2.1 코딩 스타일
+
 - TypeScript strict 모드, `any` 사용 금지 (불가피하면 `unknown` + 타입 가드)
 - 함수는 단일 책임. 한 함수 50줄 초과 시 분할 검토
 - public 함수는 반환 타입 명시
@@ -36,12 +40,14 @@
 - 자세히는 `@.claude/rules/coding-style.md`
 
 ### 2.2 아키텍처
+
 - NestJS는 Controller → Service → Repository(Prisma) 단방향
 - 모듈 간 호출은 service의 public API만. 다른 모듈의 repository 직접 호출 금지
 - 외부 서비스(SMTP, Claude API 등)는 어댑터로 추상화
 - 자세히는 `@.claude/rules/architecture.md`
 
 ### 2.3 Git 워크플로우
+
 - 브랜치: `feature/p<phase>-<영문-요약>` (예: `feature/p1-auth-signup`)
 - PR 대상: `develop`
 - 커밋 메시지: Conventional Commits + **한글** (예: `feat(auth): 이메일 인증 코드 발송 기능 추가`)
@@ -49,6 +55,7 @@
 - 자세히는 `@.claude/rules/git-workflow.md`
 
 ### 2.4 테스트
+
 - 모든 비즈니스 로직 변경에는 테스트 추가/수정 필수
 - 핵심 모듈(auth, booking, recurrence, exception-request) 커버리지 90%+
 - 그 외 70%+
@@ -56,10 +63,19 @@
 - 자세히는 `@.claude/rules/testing.md`
 
 ### 2.5 데이터베이스
+
 - 시간 컬럼은 모두 `Timestamptz(6)` (UTC 저장)
 - 시간 겹침은 DB EXCLUDE 제약으로 차단 — 애플리케이션 검증만 의존 금지
 - 마이그레이션은 항상 `prisma migrate dev --name <영문_snake>`로 생성
 - 자세히는 `@.claude/rules/database.md`
+
+### 2.6 디자인
+
+- 모든 UI 컴포넌트는 `docs/07-design.md`의 토큰 시스템 사용
+- 컬러는 CSS 변수(`--brand-500` 등)로만 참조, 하드코딩 금지
+- 폰트는 Pretendard + GeistSans + GeistMono 조합 유지
+- 시각 레퍼런스가 필요하면 `docs/design-mockups/` 참고
+- 자세히는 `@docs/07-design.md`
 
 ---
 
@@ -101,13 +117,13 @@ pnpm lint && pnpm typecheck && pnpm test --run && pnpm build
 
 이 프로젝트는 다음 커스텀 skills를 제공합니다 (`.claude/skills/`):
 
-| Skill | 용도 |
-|---|---|
-| `/test-watch` | 변경된 파일 관련 테스트 자동 실행 |
-| `/migration-create` | Prisma 마이그레이션 + 추가 SQL 생성 |
-| `/module-scaffold` | NestJS 모듈 스캐폴딩 (controller + service + dto + spec) |
-| `/api-endpoint` | API 명세 기반 엔드포인트 구현 |
-| `/commit` | Conventional Commits + 한글 메시지 자동 생성 |
+| Skill               | 용도                                                     |
+| ------------------- | -------------------------------------------------------- |
+| `/test-watch`       | 변경된 파일 관련 테스트 자동 실행                        |
+| `/migration-create` | Prisma 마이그레이션 + 추가 SQL 생성                      |
+| `/module-scaffold`  | NestJS 모듈 스캐폴딩 (controller + service + dto + spec) |
+| `/api-endpoint`     | API 명세 기반 엔드포인트 구현                            |
+| `/commit`           | Conventional Commits + 한글 메시지 자동 생성             |
 
 자세히는 각 `SKILL.md` 파일 참조.
 

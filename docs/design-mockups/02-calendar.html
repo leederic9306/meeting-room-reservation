@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>캘린더 화면 - Before / After</title>
+    <link
+      rel="stylesheet"
+      as="style"
+      crossorigin
+      href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css"
+    />
+    <link rel="stylesheet" href="tailwind.css" />
+    <style>
+      body {
+        font-family: 'Pretendard Variable', sans-serif;
+      }
+      .tabular {
+        font-feature-settings: 'tnum';
+      }
+    </style>
+  </head>
+  <body class="bg-slate-100 p-8">
+    <div class="max-w-7xl mx-auto space-y-12">
+      <div class="text-center">
+        <h1 class="text-3xl font-bold tracking-tight">캘린더 (대시보드) 개선안</h1>
+        <p class="mt-2 text-slate-600">사용자가 가장 많이 보는 화면 — 가장 큰 임팩트</p>
+      </div>
+
+      <!-- AFTER: 캘린더 상단 부분 -->
+      <div>
+        <div class="flex items-center gap-3 mb-4">
+          <span class="px-2 py-1 bg-green-100 text-green-700 text-xs font-bold rounded">AFTER</span>
+          <h2 class="text-lg font-semibold">개선 디자인 — Cron 스타일 컨트롤 바 + 정밀한 캘린더</h2>
+        </div>
+
+        <div class="bg-slate-50 rounded-xl border border-slate-200 overflow-hidden">
+          <!-- 헤더 -->
+          <header
+            class="sticky top-0 z-50 h-14 bg-white/90 backdrop-blur-md border-b border-slate-200"
+          >
+            <div class="h-full px-6 flex items-center justify-between">
+              <div class="flex items-center gap-2.5">
+                <div
+                  class="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-indigo-700 flex items-center justify-center"
+                >
+                  <svg
+                    class="w-4 h-4 text-white"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    viewBox="0 0 24 24"
+                  >
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                    <line x1="16" y1="2" x2="16" y2="6" />
+                    <line x1="8" y1="2" x2="8" y2="6" />
+                    <line x1="3" y1="10" x2="21" y2="10" />
+                  </svg>
+                </div>
+                <span class="font-semibold text-slate-900 tracking-tight">Meeting</span>
+              </div>
+
+              <nav class="hidden md:flex items-center gap-1">
+                <button class="px-3 h-8 rounded-md text-sm font-medium text-slate-900 bg-slate-100">
+                  캘린더
+                </button>
+                <button
+                  class="px-3 h-8 rounded-md text-sm font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+                >
+                  내 신청
+                </button>
+              </nav>
+
+              <div class="flex items-center gap-3">
+                <button
+                  class="px-3 h-8 rounded-md bg-slate-100 text-xs font-semibold text-slate-700 hover:bg-slate-200 transition-colors flex items-center gap-1.5"
+                >
+                  <svg
+                    class="w-3.5 h-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    viewBox="0 0 24 24"
+                  >
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  </svg>
+                  관리자
+                </button>
+                <div
+                  class="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center text-sm font-semibold cursor-pointer"
+                >
+                  이
+                </div>
+              </div>
+            </div>
+          </header>
+
+          <!-- 메인 -->
+          <main class="px-6 py-6">
+            <!-- 페이지 헤더 -->
+            <div class="flex items-end justify-between mb-5">
+              <div>
+                <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">캘린더</p>
+                <h1 class="mt-1 text-2xl font-semibold tracking-tight text-slate-900 tabular">
+                  2026년 4월
+                </h1>
+              </div>
+              <button
+                class="h-10 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm rounded-lg flex items-center gap-2 transition-colors shadow-sm"
+              >
+                <svg
+                  class="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  viewBox="0 0 24 24"
+                >
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                새 예약
+              </button>
+            </div>
+
+            <!-- 컨트롤 바 -->
+            <div
+              class="bg-white rounded-xl border border-slate-200 p-3 mb-4 flex items-center justify-between"
+            >
+              <!-- 좌측: 날짜 네비 -->
+              <div class="flex items-center gap-2">
+                <button
+                  class="w-8 h-8 rounded-md hover:bg-slate-100 transition-colors flex items-center justify-center"
+                >
+                  <svg
+                    class="w-4 h-4 text-slate-600"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    viewBox="0 0 24 24"
+                  >
+                    <polyline points="15 18 9 12 15 6" />
+                  </svg>
+                </button>
+                <button
+                  class="px-3 h-8 rounded-md text-sm font-medium text-slate-700 border border-slate-200 hover:bg-slate-50 transition-colors"
+                >
+                  오늘
+                </button>
+                <button
+                  class="w-8 h-8 rounded-md hover:bg-slate-100 transition-colors flex items-center justify-center"
+                >
+                  <svg
+                    class="w-4 h-4 text-slate-600"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    viewBox="0 0 24 24"
+                  >
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </button>
+                <h2 class="ml-2 text-sm font-semibold text-slate-900 tabular">
+                  4월 26일 - 5월 2일
+                </h2>
+              </div>
+
+              <!-- 중앙: 회의실 필터 -->
+              <div class="flex items-center gap-1.5">
+                <button class="px-3 h-7 rounded-md text-xs font-semibold bg-slate-900 text-white">
+                  전체
+                </button>
+                <button
+                  class="px-3 h-7 rounded-md text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors flex items-center gap-1.5"
+                >
+                  <span class="w-2 h-2 rounded-full bg-indigo-500"></span> 회의실 A
+                </button>
+                <button
+                  class="px-3 h-7 rounded-md text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors flex items-center gap-1.5"
+                >
+                  <span class="w-2 h-2 rounded-full bg-teal-500"></span> 회의실 B
+                </button>
+                <button
+                  class="px-3 h-7 rounded-md text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors flex items-center gap-1.5"
+                >
+                  <span class="w-2 h-2 rounded-full bg-amber-500"></span> 회의실 C
+                </button>
+              </div>
+
+              <!-- 우측: 뷰 전환 -->
+              <div class="inline-flex items-center bg-slate-100 rounded-md p-0.5">
+                <button
+                  class="px-3 h-7 rounded-sm text-xs font-medium text-slate-500 hover:text-slate-900 transition-colors"
+                >
+                  일
+                </button>
+                <button
+                  class="px-3 h-7 rounded-sm text-xs font-semibold bg-white text-slate-900 shadow-sm"
+                >
+                  주
+                </button>
+                <button
+                  class="px-3 h-7 rounded-sm text-xs font-medium text-slate-500 hover:text-slate-900 transition-colors"
+                >
+                  월
+                </button>
+              </div>
+            </div>
+
+            <!-- 캘린더 그리드 -->
+            <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+              <!-- 요일 헤더 -->
+              <div class="grid grid-cols-[60px_repeat(7,1fr)] border-b border-slate-200">
+                <div></div>
+                <div class="text-center py-3 border-l border-slate-100">
+                  <div class="text-xs font-medium text-rose-600 uppercase tracking-wider">SUN</div>
+                  <div class="mt-1 text-lg font-semibold text-slate-900 tabular">26</div>
+                </div>
+                <div class="text-center py-3 border-l border-slate-100 bg-indigo-50/30">
+                  <div class="text-xs font-medium text-indigo-600 uppercase tracking-wider">
+                    MON
+                  </div>
+                  <div class="mt-1 text-lg font-semibold text-indigo-700 tabular">27</div>
+                </div>
+                <div class="text-center py-3 border-l border-slate-100">
+                  <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">TUE</div>
+                  <div class="mt-1 text-lg font-semibold text-slate-900 tabular">28</div>
+                </div>
+                <div class="text-center py-3 border-l border-slate-100">
+                  <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">WED</div>
+                  <div class="mt-1 text-lg font-semibold text-slate-900 tabular">29</div>
+                </div>
+                <div class="text-center py-3 border-l border-slate-100">
+                  <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">THU</div>
+                  <div class="mt-1 text-lg font-semibold text-slate-900 tabular">30</div>
+                </div>
+                <div class="text-center py-3 border-l border-slate-100">
+                  <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">FRI</div>
+                  <div class="mt-1 text-lg font-semibold text-slate-900 tabular">1</div>
+                </div>
+                <div class="text-center py-3 border-l border-slate-100">
+                  <div class="text-xs font-medium text-rose-600 uppercase tracking-wider">SAT</div>
+                  <div class="mt-1 text-lg font-semibold text-slate-900 tabular">2</div>
+                </div>
+              </div>
+
+              <!-- 시간 그리드 (3시간만 샘플) -->
+              <div class="grid grid-cols-[60px_repeat(7,1fr)]">
+                <!-- 7시 -->
+                <div class="text-right pr-2 pt-1">
+                  <span class="text-[11px] font-medium text-slate-400 tabular">07:00</span>
+                </div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors"
+                ></div>
+                <div class="border-l border-t border-slate-100 h-16 relative bg-indigo-50/30">
+                  <!-- 예약 블록 -->
+                  <div
+                    class="absolute left-1 right-1 top-0.5 bottom-2 rounded-md bg-indigo-500 text-white px-2 py-1.5 text-xs shadow-sm border-l-4 border-indigo-700 cursor-pointer hover:brightness-110 transition-all"
+                  >
+                    <div class="font-semibold truncate">테스트 예약</div>
+                    <div class="text-indigo-100 text-[11px] tabular mt-0.5">07:00 - 08:15</div>
+                  </div>
+                </div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors"
+                ></div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors"
+                ></div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors"
+                ></div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors"
+                ></div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors"
+                ></div>
+
+                <!-- 8시 -->
+                <div class="text-right pr-2 pt-1">
+                  <span class="text-[11px] font-medium text-slate-400 tabular">08:00</span>
+                </div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors"
+                ></div>
+                <div class="border-l border-t border-slate-100 h-16 relative bg-indigo-50/30"></div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors"
+                ></div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors"
+                >
+                  <!-- 다른 회의실 예약 (teal) -->
+                  <div
+                    class="absolute left-1 right-1 top-1 h-12 rounded-md bg-teal-500 text-white px-2 py-1.5 text-xs shadow-sm border-l-4 border-teal-700 cursor-pointer hover:brightness-110 transition-all"
+                  >
+                    <div class="font-semibold truncate">디자인 리뷰</div>
+                    <div class="text-teal-100 text-[11px] tabular mt-0.5">08:00 - 09:00</div>
+                  </div>
+                </div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors"
+                ></div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors"
+                ></div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors"
+                ></div>
+
+                <!-- 9시 (현재 시각 표시) -->
+                <div class="text-right pr-2 pt-1 relative">
+                  <span class="text-[11px] font-medium text-slate-400 tabular">09:00</span>
+                </div>
+                <div
+                  class="border-l border-t border-slate-100 h-16 relative group hover:bg-indigo-50/30 transition-colors col-span-7 grid grid-cols-7"
+                >
+                  <!-- 현재 시각 라인 -->
+                  <div
+                    class="absolute left-0 right-0 z-10 pointer-events-none flex items-center"
+                    style="top: 40%"
+                  >
+                    <div class="w-2.5 h-2.5 rounded-full bg-rose-500 -ml-1 ring-2 ring-white"></div>
+                    <div class="flex-1 h-px bg-rose-500"></div>
+                  </div>
+
+                  <div class="border-l border-slate-100 h-16 relative"></div>
+                  <div class="border-l border-slate-100 h-16 relative bg-indigo-50/30"></div>
+                  <div class="border-l border-slate-100 h-16 relative"></div>
+                  <div class="border-l border-slate-100 h-16 relative"></div>
+                  <div class="border-l border-slate-100 h-16 relative">
+                    <!-- 호버 슬롯 예시 (가시화) -->
+                    <div
+                      class="absolute inset-1 rounded-md border-2 border-dashed border-indigo-300 bg-indigo-50 flex items-center justify-center"
+                    >
+                      <svg
+                        class="w-5 h-5 text-indigo-400"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.5"
+                        viewBox="0 0 24 24"
+                      >
+                        <line x1="12" y1="5" x2="12" y2="19" />
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                      </svg>
+                    </div>
+                  </div>
+                  <div class="border-l border-slate-100 h-16 relative"></div>
+                  <div class="border-l border-slate-100 h-16 relative"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 푸터 정보 -->
+            <div class="mt-4 flex items-center justify-between text-xs text-slate-500">
+              <div class="flex items-center gap-1.5 tabular">
+                <svg
+                  class="w-3.5 h-3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  viewBox="0 0 24 24"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <polyline points="12 6 12 12 16 14" />
+                </svg>
+                한국 표준시 · UTC+9
+              </div>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" class="w-3.5 h-3.5 rounded" />
+                <span>내 예약만 보기</span>
+              </label>
+            </div>
+          </main>
+        </div>
+
+        <div class="mt-3 text-sm text-slate-600 space-y-1">
+          <div>
+            <strong class="text-green-700">개선:</strong> 헤더에 로고 + 사용자 아바타 → 시각 앵커
+            확보
+          </div>
+          <div>
+            <strong class="text-green-700">개선:</strong> 컨트롤 바를 한 줄로 통합 (날짜/필터/뷰
+            전환)
+          </div>
+          <div>
+            <strong class="text-green-700">개선:</strong> 회의실별 컬러 도트로 시각 구분, 캘린더
+            블록과 일관성
+          </div>
+          <div>
+            <strong class="text-green-700">개선:</strong> 시간 라벨을 외부 좌측에 작게 (Cron 스타일)
+            → 공간 활용
+          </div>
+          <div>
+            <strong class="text-green-700">개선:</strong> 요일 헤더에 SUN/MON 등 영문 라벨 + 큰 숫자
+            → 위계 명확
+          </div>
+          <div>
+            <strong class="text-green-700">개선:</strong> 빈 슬롯 호버 시 + 아이콘 미리보기 → 클릭
+            가능 표시
+          </div>
+          <div>
+            <strong class="text-green-700">개선:</strong> 현재 시각 표시선 (빨간 라인) → 지금
+            어디인지 직관적
+          </div>
+          <div>
+            <strong class="text-green-700">개선:</strong> 토/일 컬럼 빨강, 오늘은 살짝 다른 배경 →
+            정보 인지 도움
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

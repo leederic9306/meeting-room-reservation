@@ -2,15 +2,16 @@
 
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation } from '@tanstack/react-query';
+import { AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 
+import { AuthFormHeader } from '@/components/features/auth/AuthFormHeader';
 import { FieldError } from '@/components/features/auth/FieldError';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -65,56 +66,56 @@ function ResetPasswordPageContent(): JSX.Element {
 
   if (!token) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>유효하지 않은 링크</CardTitle>
-          <CardDescription>재설정 링크가 잘못되었거나 만료되었습니다.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Link href="/forgot-password" className="text-sm text-primary hover:underline">
-            비밀번호 재설정 다시 요청
-          </Link>
-        </CardContent>
-      </Card>
+      <div>
+        <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-warning-50">
+          <AlertTriangle className="h-6 w-6 text-warning-700" strokeWidth={1.75} />
+        </div>
+        <AuthFormHeader
+          title="유효하지 않은 링크"
+          description="재설정 링크가 잘못되었거나 만료되었습니다."
+        />
+        <Link
+          href="/forgot-password"
+          className="text-sm font-medium text-brand-600 hover:underline"
+        >
+          비밀번호 재설정 다시 요청 →
+        </Link>
+      </div>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>새 비밀번호 설정</CardTitle>
-        <CardDescription>새로 사용할 비밀번호를 입력해주세요.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={onSubmit} className="space-y-4" noValidate>
-          <div>
-            <Label htmlFor="newPassword">새 비밀번호</Label>
-            <Input
-              id="newPassword"
-              type="password"
-              autoComplete="new-password"
-              placeholder="영문+숫자+특수문자 포함 8자 이상"
-              {...register('newPassword')}
-            />
-            <FieldError message={errors.newPassword?.message} />
-          </div>
+    <>
+      <AuthFormHeader title="새 비밀번호 설정" description="새로 사용할 비밀번호를 입력해주세요." />
 
-          <div>
-            <Label htmlFor="confirmPassword">비밀번호 확인</Label>
-            <Input
-              id="confirmPassword"
-              type="password"
-              autoComplete="new-password"
-              {...register('confirmPassword')}
-            />
-            <FieldError message={errors.confirmPassword?.message} />
-          </div>
+      <form onSubmit={onSubmit} className="space-y-4" noValidate>
+        <div>
+          <Label htmlFor="newPassword">새 비밀번호</Label>
+          <Input
+            id="newPassword"
+            type="password"
+            autoComplete="new-password"
+            placeholder="영문+숫자+특수문자 8자 이상"
+            {...register('newPassword')}
+          />
+          <FieldError message={errors.newPassword?.message} />
+        </div>
 
-          <Button type="submit" className="w-full" disabled={mutation.isPending}>
-            {mutation.isPending ? '변경 중...' : '비밀번호 변경'}
-          </Button>
-        </form>
-      </CardContent>
-    </Card>
+        <div>
+          <Label htmlFor="confirmPassword">비밀번호 확인</Label>
+          <Input
+            id="confirmPassword"
+            type="password"
+            autoComplete="new-password"
+            {...register('confirmPassword')}
+          />
+          <FieldError message={errors.confirmPassword?.message} />
+        </div>
+
+        <Button type="submit" className="w-full" disabled={mutation.isPending}>
+          {mutation.isPending ? '변경 중...' : '비밀번호 변경'}
+        </Button>
+      </form>
+    </>
   );
 }

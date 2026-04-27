@@ -2,6 +2,7 @@
 
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle } from 'lucide-react';
 import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
@@ -12,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Modal } from '@/components/ui/modal';
+import { Textarea } from '@/components/ui/textarea';
 import {
   createRoom,
   updateRoom,
@@ -139,20 +141,33 @@ export function RoomFormModal({ open, onClose, room }: Props): JSX.Element {
 
   const serverError = errors.root?.serverError?.message;
 
+  const footer = (
+    <>
+      <Button type="button" variant="secondary" onClick={onClose} disabled={mutation.isPending}>
+        취소
+      </Button>
+      <Button type="submit" form="room-form" disabled={mutation.isPending}>
+        {mutation.isPending ? '저장 중...' : isEdit ? '수정' : '추가'}
+      </Button>
+    </>
+  );
+
   return (
     <Modal
       open={open}
       onClose={onClose}
       title={isEdit ? '회의실 수정' : '회의실 추가'}
       description={isEdit ? '회의실 정보를 수정합니다.' : '새 회의실을 등록합니다.'}
+      footer={footer}
     >
-      <form onSubmit={onSubmit} className="space-y-4" noValidate>
+      <form id="room-form" onSubmit={onSubmit} className="space-y-5" noValidate>
         {serverError ? (
           <div
             role="alert"
-            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            className="flex items-start gap-2 rounded-lg border border-danger-500/20 bg-danger-50 px-3 py-2.5 text-sm text-danger-700"
           >
-            {serverError}
+            <AlertTriangle className="h-4 w-4 shrink-0 translate-y-0.5" />
+            <span>{serverError}</span>
           </div>
         ) : null}
 
@@ -162,7 +177,7 @@ export function RoomFormModal({ open, onClose, room }: Props): JSX.Element {
             id="room-name"
             maxLength={100}
             aria-invalid={Boolean(errors.name)}
-            className={cn(errors.name && 'border-destructive')}
+            className={cn(errors.name && 'border-danger-500')}
             {...register('name')}
           />
           <FieldError message={errors.name?.message} />
@@ -170,14 +185,16 @@ export function RoomFormModal({ open, onClose, room }: Props): JSX.Element {
 
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
-            <Label htmlFor="room-capacity">수용 인원</Label>
+            <Label htmlFor="room-capacity" optional>
+              수용 인원
+            </Label>
             <Input
               id="room-capacity"
               type="number"
               min={1}
               max={1000}
+              className={cn('tabular', errors.capacity && 'border-danger-500')}
               aria-invalid={Boolean(errors.capacity)}
-              className={cn(errors.capacity && 'border-destructive')}
               {...register('capacity', { setValueAs: numericOrUndefined })}
             />
             <FieldError message={errors.capacity?.message} />
@@ -188,8 +205,8 @@ export function RoomFormModal({ open, onClose, room }: Props): JSX.Element {
               id="room-display-order"
               type="number"
               min={0}
+              className={cn('tabular', errors.displayOrder && 'border-danger-500')}
               aria-invalid={Boolean(errors.displayOrder)}
-              className={cn(errors.displayOrder && 'border-destructive')}
               {...register('displayOrder', { setValueAs: numericOrZero })}
             />
             <FieldError message={errors.displayOrder?.message} />
@@ -197,7 +214,9 @@ export function RoomFormModal({ open, onClose, room }: Props): JSX.Element {
         </div>
 
         <div>
-          <Label htmlFor="room-location">위치</Label>
+          <Label htmlFor="room-location" optional>
+            위치
+          </Label>
           <Input
             id="room-location"
             maxLength={200}
@@ -208,14 +227,13 @@ export function RoomFormModal({ open, onClose, room }: Props): JSX.Element {
         </div>
 
         <div>
-          <Label htmlFor="room-description">설명</Label>
-          <textarea
+          <Label htmlFor="room-description" optional>
+            설명
+          </Label>
+          <Textarea
             id="room-description"
-            className={cn(
-              'flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              errors.description && 'border-destructive',
-            )}
             maxLength={2000}
+            className={cn(errors.description && 'border-danger-500')}
             {...register('description')}
           />
           <FieldError message={errors.description?.message} />
@@ -225,21 +243,13 @@ export function RoomFormModal({ open, onClose, room }: Props): JSX.Element {
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
-              className="h-4 w-4 rounded border-input"
+              className="h-4 w-4 rounded accent-brand-500"
               {...register('isActive')}
             />
-            활성 상태 (체크 해제 시 신규 예약 차단)
+            <span className="text-neutral-700">활성 상태</span>
+            <span className="text-xs text-neutral-500">(체크 해제 시 신규 예약 차단)</span>
           </label>
         ) : null}
-
-        <div className="flex justify-end gap-2 pt-2">
-          <Button type="button" variant="outline" onClick={onClose} disabled={mutation.isPending}>
-            취소
-          </Button>
-          <Button type="submit" disabled={mutation.isPending}>
-            {mutation.isPending ? '저장 중...' : isEdit ? '수정' : '추가'}
-          </Button>
-        </div>
       </form>
     </Modal>
   );

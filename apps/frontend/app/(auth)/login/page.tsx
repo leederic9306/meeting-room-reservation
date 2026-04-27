@@ -8,9 +8,9 @@ import { Suspense } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 
+import { AuthFormHeader } from '@/components/features/auth/AuthFormHeader';
 import { FieldError } from '@/components/features/auth/FieldError';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { login, loginFormSchema, type LoginFormValues } from '@/lib/api/auth';
@@ -18,7 +18,6 @@ import type { ApiError } from '@/lib/api/axios';
 import { useAuthStore } from '@/stores/auth.store';
 
 // useSearchParams는 Suspense 경계가 없으면 Next.js static export 시 CSR bailout 오류를 냄.
-// 페이지 본체를 감싸 prerender가 통과하도록 구성.
 export default function LoginPage(): JSX.Element {
   return (
     <Suspense fallback={null}>
@@ -68,44 +67,43 @@ function LoginPageContent(): JSX.Element {
   const onSubmit = handleSubmit((values) => mutation.mutate(values));
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>로그인</CardTitle>
-        <CardDescription>이메일과 비밀번호를 입력하세요.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={onSubmit} className="space-y-4" noValidate>
-          <div>
-            <Label htmlFor="email">이메일</Label>
-            <Input id="email" type="email" autoComplete="email" {...register('email')} />
-            <FieldError message={errors.email?.message} />
-          </div>
+    <>
+      <AuthFormHeader
+        title="다시 만나서 반가워요"
+        description="이메일과 비밀번호를 입력해주세요."
+      />
 
-          <div>
-            <Label htmlFor="password">비밀번호</Label>
-            <Input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              {...register('password')}
-            />
-            <FieldError message={errors.password?.message} />
-          </div>
-
-          <Button type="submit" className="w-full" disabled={mutation.isPending}>
-            {mutation.isPending ? '로그인 중...' : '로그인'}
-          </Button>
-        </form>
-
-        <div className="mt-4 flex justify-between text-sm">
-          <Link href="/signup" className="text-muted-foreground hover:text-primary">
-            회원가입
-          </Link>
-          <Link href="/forgot-password" className="text-muted-foreground hover:text-primary">
-            비밀번호를 잊으셨나요?
-          </Link>
+      <form onSubmit={onSubmit} className="space-y-4" noValidate>
+        <div>
+          <Label htmlFor="email">이메일</Label>
+          <Input id="email" type="email" autoComplete="email" {...register('email')} />
+          <FieldError message={errors.email?.message} />
         </div>
-      </CardContent>
-    </Card>
+
+        <div>
+          <Label htmlFor="password">비밀번호</Label>
+          <Input
+            id="password"
+            type="password"
+            autoComplete="current-password"
+            {...register('password')}
+          />
+          <FieldError message={errors.password?.message} />
+        </div>
+
+        <Button type="submit" className="w-full" disabled={mutation.isPending}>
+          {mutation.isPending ? '로그인 중...' : '로그인'}
+        </Button>
+      </form>
+
+      <div className="mt-6 flex justify-between text-sm">
+        <Link href="/signup" className="font-medium text-neutral-600 hover:text-brand-600">
+          계정 만들기
+        </Link>
+        <Link href="/forgot-password" className="font-medium text-neutral-600 hover:text-brand-600">
+          비밀번호를 잊으셨나요?
+        </Link>
+      </div>
+    </>
   );
 }

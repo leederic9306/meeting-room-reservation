@@ -8,7 +8,7 @@ const BookingCalendar = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="flex h-[600px] items-center justify-center text-sm text-muted-foreground">
+      <div className="flex h-[600px] items-center justify-center text-sm text-neutral-500">
         캘린더 불러오는 중...
       </div>
     ),
@@ -16,13 +16,5 @@ const BookingCalendar = dynamic(
 );
 
 export default function DashboardPage(): JSX.Element {
-  return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold">대시보드</h1>
-      <p className="text-sm text-muted-foreground">
-        빈 슬롯을 클릭하면 예약 생성, 예약을 클릭하면 상세 정보를 확인할 수 있습니다.
-      </p>
-      <BookingCalendar />
-    </div>
-  );
+  return <BookingCalendar />;
 }

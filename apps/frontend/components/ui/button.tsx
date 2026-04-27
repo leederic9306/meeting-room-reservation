@@ -4,22 +4,46 @@ import { forwardRef, type ButtonHTMLAttributes } from 'react';
 
 import { cn } from '@/lib/utils';
 
+/**
+ * Button (docs/07-design.md §4.1)
+ *
+ * - default(primary): brand-500 → 600(hover) → 700(active)
+ * - secondary: 흰 배경 + neutral 보더, 가장 많이 쓰이는 보조 액션
+ * - outline: secondary와 시각적 동일 — shadcn 호환을 위해 alias로 유지
+ * - destructive(=danger): 삭제 등 위험 액션
+ * - ghost: 탭/네비게이션, 호버 배경만
+ * - link: 인라인 텍스트 링크
+ *
+ * Focus ring 은 brand-100 으로 통일. scale 변형 없음 (§6.2 — 색상만).
+ */
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
+  [
+    'inline-flex items-center justify-center gap-2 whitespace-nowrap',
+    'rounded-lg text-sm font-semibold',
+    'transition-colors duration-150',
+    'focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand-100 focus-visible:ring-offset-0',
+    'disabled:opacity-50 disabled:pointer-events-none',
+  ].join(' '),
   {
     variants: {
       variant: {
-        default: 'bg-primary text-primary-foreground hover:opacity-90',
-        destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
-        outline: 'border border-input bg-background hover:bg-accent hover:text-accent-foreground',
-        secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-        ghost: 'hover:bg-accent hover:text-accent-foreground',
-        link: 'text-primary underline-offset-4 hover:underline',
+        default: 'bg-brand-500 text-white shadow-xs hover:bg-brand-600 active:bg-brand-700',
+        secondary: [
+          'bg-white text-neutral-700 border border-neutral-200',
+          'hover:bg-neutral-50 hover:border-neutral-300 active:bg-neutral-100',
+        ].join(' '),
+        outline: [
+          'bg-white text-neutral-700 border border-neutral-200',
+          'hover:bg-neutral-50 hover:border-neutral-300 active:bg-neutral-100',
+        ].join(' '),
+        destructive: 'bg-danger-500 text-white shadow-xs hover:bg-danger-700',
+        ghost: 'text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900',
+        link: 'text-brand-600 underline-offset-4 hover:underline',
       },
       size: {
-        default: 'h-10 px-4 py-2',
-        sm: 'h-9 rounded-md px-3',
-        lg: 'h-11 rounded-md px-8',
+        sm: 'h-8 px-3 text-xs',
+        default: 'h-10 px-4',
+        lg: 'h-12 px-5 text-base',
         icon: 'h-10 w-10',
       },
     },

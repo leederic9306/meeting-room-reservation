@@ -1,13 +1,15 @@
-import { AlertTriangle, Inbox, Lock, type LucideIcon } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Inbox, Lock, type LucideIcon } from 'lucide-react';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApiError } from '@/lib/api/axios';
+import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
-// EmptyState — 일러스트(아이콘) + 안내 메시지 + 선택적 액션
+// EmptyState — 일러스트(아이콘) + 안내 메시지 + 선택적 액션 / 도움말 링크
+// docs/07-design.md §5.7
 // ---------------------------------------------------------------------------
 
 interface EmptyStateProps {
@@ -17,6 +19,11 @@ interface EmptyStateProps {
   description?: string;
   /** "새로 만들기" 같은 후속 액션 버튼/링크. */
   action?: ReactNode;
+  /** 도움말/정책 링크 — 액션과 별개로 추가 설명 페이지로 유도. */
+  helpHref?: string;
+  helpLabel?: string;
+  /** 일러스트 톤 — 기본은 neutral. brand면 brand-50→100 그라데이션. */
+  tone?: 'neutral' | 'brand';
   className?: string;
 }
 
@@ -25,28 +32,48 @@ export function EmptyState({
   title,
   description,
   action,
+  helpHref,
+  helpLabel,
+  tone = 'neutral',
   className,
 }: EmptyStateProps): JSX.Element {
   return (
     <div
-      className={[
-        'flex flex-col items-center justify-center gap-3 px-4 py-12 text-center',
-        className ?? '',
-      ].join(' ')}
+      className={cn(
+        'flex flex-col items-center justify-center gap-4 px-6 py-16 text-center',
+        className,
+      )}
     >
       <div
         aria-hidden
-        className="flex h-16 w-16 items-center justify-center rounded-full bg-muted/60"
+        className={cn(
+          'flex h-16 w-16 items-center justify-center rounded-2xl',
+          tone === 'brand'
+            ? 'bg-gradient-to-br from-brand-100 to-brand-50'
+            : 'bg-gradient-to-br from-neutral-100 to-neutral-50',
+        )}
       >
-        <Icon className="h-8 w-8 text-muted-foreground/70" strokeWidth={1.5} />
+        <Icon
+          className={cn('h-8 w-8', tone === 'brand' ? 'text-brand-600' : 'text-neutral-400')}
+          strokeWidth={1.5}
+        />
       </div>
       <div>
-        <h3 className="text-base font-semibold">{title}</h3>
+        <h3 className="text-base font-semibold text-neutral-900">{title}</h3>
         {description ? (
-          <p className="mt-1 max-w-md text-sm text-muted-foreground">{description}</p>
+          <p className="mx-auto mt-1 max-w-sm text-sm text-neutral-500">{description}</p>
         ) : null}
       </div>
       {action ?? null}
+      {helpHref ? (
+        <Link
+          href={helpHref}
+          className="inline-flex items-center gap-1 text-sm font-medium text-brand-600 hover:underline"
+        >
+          {helpLabel ?? '자세히 알아보기'}
+          <ArrowRight className="h-3.5 w-3.5" />
+        </Link>
+      ) : null}
     </div>
   );
 }
@@ -88,23 +115,23 @@ export function ErrorState({
   return (
     <div
       role="alert"
-      className={[
-        'flex flex-col items-center justify-center gap-3 px-4 py-12 text-center',
-        className ?? '',
-      ].join(' ')}
+      className={cn(
+        'flex flex-col items-center justify-center gap-4 px-6 py-16 text-center',
+        className,
+      )}
     >
       <div
         aria-hidden
-        className="flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10"
+        className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-danger-50 to-white"
       >
-        <AlertTriangle className="h-8 w-8 text-destructive" strokeWidth={1.5} />
+        <AlertTriangle className="h-8 w-8 text-danger-500" strokeWidth={1.5} />
       </div>
       <div>
-        <h3 className="text-base font-semibold">{heading}</h3>
-        <p className="mt-1 max-w-md text-sm text-muted-foreground">{detail}</p>
+        <h3 className="text-base font-semibold text-neutral-900">{heading}</h3>
+        <p className="mx-auto mt-1 max-w-sm text-sm text-neutral-500">{detail}</p>
       </div>
       {onRetry ? (
-        <Button type="button" variant="outline" onClick={onRetry} disabled={isRetrying}>
+        <Button type="button" variant="secondary" onClick={onRetry} disabled={isRetrying}>
           {isRetrying ? '다시 시도 중...' : '다시 시도'}
         </Button>
       ) : null}
@@ -136,17 +163,19 @@ export function UnauthorizedState({
     >
       <div
         aria-hidden
-        className="flex h-20 w-20 items-center justify-center rounded-full bg-destructive/10"
+        className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-danger-50 to-white"
       >
-        <Lock className="h-10 w-10 text-destructive" strokeWidth={1.5} />
+        <Lock className="h-10 w-10 text-danger-500" strokeWidth={1.5} />
       </div>
-      <p className="text-4xl font-bold text-destructive">403</p>
-      <h2 className="text-xl font-semibold">접근 권한이 없습니다</h2>
-      <p className="max-w-md text-sm text-muted-foreground">
+      <p className="tabular text-h1 font-bold text-danger-700">403</p>
+      <h2 className="text-h2 font-semibold tracking-tight text-neutral-900">
+        접근 권한이 없습니다
+      </h2>
+      <p className="max-w-md text-sm text-neutral-500">
         {message ??
           '이 페이지를 보려면 추가 권한이 필요합니다. 권한이 필요하면 관리자에게 문의해 주세요.'}
       </p>
-      <Button asChild variant="outline" className="min-h-[44px]">
+      <Button asChild variant="secondary" className="min-h-[44px]">
         <Link href={homeHref}>{homeLabel}</Link>
       </Button>
     </div>
@@ -172,7 +201,7 @@ export function TableSkeletonRows({
   return (
     <>
       {Array.from({ length: rows }).map((_, rowIdx) => (
-        <tr key={rowIdx} className="border-t">
+        <tr key={rowIdx}>
           {Array.from({ length: columns }).map((__, colIdx) => (
             <td key={colIdx} className="px-4 py-3">
               <Skeleton className={`h-4 ${widths?.[colIdx] ?? 'w-full'}`} />

@@ -92,10 +92,19 @@ export function DateTimeQuarterPicker({
   const hourId = `${id}-hour`;
   const minuteId = `${id}-minute`;
 
+  // 디자인 §4.2 — 보더 neutral-200, 포커스 brand. 에러는 danger.
+  // 좁은 폼 폭에서 date/시/분이 모두 들어가도록 글자/패딩을 살짝 줄였다.
+  const fieldBase = cn(
+    'h-10 rounded-lg bg-white text-xs text-neutral-900',
+    'border transition-colors',
+    'hover:border-neutral-300',
+    'focus:outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-100',
+  );
+
   return (
     <div>
       <Label htmlFor={dateId}>{label}</Label>
-      <div className="mt-1.5 grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1.5">
         <input
           id={dateId}
           type="date"
@@ -104,8 +113,9 @@ export function DateTimeQuarterPicker({
           required={required}
           aria-invalid={Boolean(error)}
           className={cn(
-            'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            error && 'border-destructive',
+            fieldBase,
+            'w-full min-w-0 px-2 tabular',
+            error ? 'border-danger-500' : 'border-neutral-200',
           )}
         />
         <select
@@ -116,8 +126,9 @@ export function DateTimeQuarterPicker({
           required={required}
           aria-invalid={Boolean(error)}
           className={cn(
-            'h-10 rounded-md border border-input bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            error && 'border-destructive',
+            fieldBase,
+            'px-1.5 tabular',
+            error ? 'border-danger-500' : 'border-neutral-200',
           )}
         >
           <option value="">--</option>
@@ -135,8 +146,9 @@ export function DateTimeQuarterPicker({
           required={required}
           aria-invalid={Boolean(error)}
           className={cn(
-            'h-10 rounded-md border border-input bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            error && 'border-destructive',
+            fieldBase,
+            'px-1.5 tabular',
+            error ? 'border-danger-500' : 'border-neutral-200',
           )}
         >
           <option value="">--</option>
@@ -148,7 +160,7 @@ export function DateTimeQuarterPicker({
         </select>
       </div>
       {error ? (
-        <p role="alert" className="mt-1 text-xs text-destructive">
+        <p role="alert" className="mt-1 text-xs text-danger-700">
           {error}
         </p>
       ) : null}
